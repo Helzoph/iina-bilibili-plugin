@@ -7,6 +7,7 @@ const { createParser } = require("../src/parser");
 const { createPlayer, DANMAKU_TITLE } = require("../src/player");
 const F = require("./fixtures");
 const { mockEnv, fakeIina } = require("./harness");
+const fs = require("fs");
 
 const VIDEO_URL = "https://www.bilibili.com/video/BV1xx411c7mD?t=30";
 const VIDEO_ROUTES = [
@@ -764,4 +765,174 @@ test("提供 showSidebar 时菜单里有显示侧边栏", () => {
   ctx.player.buildMenu();
   find(ctx.iina, "Bilibili", "显示侧边栏").action();
   assert.equal(shown, 1);
+});
+
+// ---------------------------------------------------------------- 连播
+
+const MULTI_ROUTES = [[/web-interface\/view/, F.VIEW_MULTI]].concat(VIDEO_ROUTES);
+
+test("单独打开多 P 中的某一 P 时把后面的分 P 追加到播放列表", async () => {
+  const ctx = setup({}, MULTI_ROUTES);
+  Object.assign(ctx.iina.props, { "playlist-pos": 0, "playlist-count": 1 });
+  await open(ctx, "https://www.bilibili.com/video/BV1multi?p=1");
+  const add = ctx.iina.commands.filter((c) => c[0] === "loadlist");
+  assert.deepEqual(add, [["loadlist", "memory://#EXTM3U\n#EXTINF:70,P2 第二集\nhttps://www.bilibili.com/video/BV1multi?p=2", "append"]]);
+});
+
+test("从列表展开的条目、不是最后一项、已是最后一 P 或关闭连播时不追加", async () => {
+  const cases = [
+    [{}, { "playlist-pos": 0, "playlist-count": 1, "playlist/0/playlist-path": "https://space.bilibili.com/1" }, "?p=1"],
+    [{}, { "playlist-pos": 0, "playlist-count": 2 }, "?p=1"],
+    [{}, { "playlist-pos": 0, "playlist-count": 1 }, "?p=2"],
+    [{ autoplay_next: false }, { "playlist-pos": 0, "playlist-count": 1 }, "?p=1"],
+  ];
+  for (const [prefs, props, query] of cases) {
+    const ctx = setup(prefs, MULTI_ROUTES);
+    Object.assign(ctx.iina.props, props);
+    await open(ctx, "https://www.bilibili.com/video/BV1multi" + query);
+    assert.ok(!ctx.iina.commands.some((c) => c[0] === "loadlist"), JSON.stringify([prefs, props, query]));
+  }
+});
+
+// ---------------------------------------------------------------- 播放进度
+
+const LOGIN = { cookie_source: "manual", cookie: "SESSDATA=s; DedeUserID=42; bili_jct=tok; buvid3=b" };
+const PLAIN_URL = "https://www.bilibili.com/video/BV1xx411c7mD";
+const lastPlay = (ms, cid) => ({ code: 0, data: { ...F.PLAYER_V2.data, last_play_time: ms, last_play_cid: cid || 1001 } });
+
+// 已登录的播放器；reported 记录每次上报的表单
+function syncSetup(prefs, v2, reply) {
+  const reported = [];
+  const ctx = setup(Object.assign({}, LOGIN, prefs), [
+    [/player\/v2/, v2 || F.PLAYER_V2],
+    [/history\/report/, (url, req) => {
+      const file = req.args[req.args.indexOf("--data-binary") + 1].slice(1);
+      reported.push(Object.fromEntries(new URLSearchParams(fs.readFileSync(file, "utf8"))));
+      return reply || { code: 0 };
+    }],
+  ].concat(VIDEO_ROUTES));
+  ctx.reported = reported;
+  return ctx;
+}
+
+test("已登录时从 B 站记录的进度继续播放并提示", async () => {
+  const ctx = syncSetup({}, lastPlay(61000));
+  await open(ctx, PLAIN_URL);
+  assert.equal(ctx.iina.props["file-local-options/start"], "61");
+  assert.equal(ctx.iina.osds.at(-1), "从上次看到的 1:01 继续播放");
+});
+
+test("链接里的 t=、重新加载时的进度优先于播放记录；不同分 P 或快看完时不续播", async () => {
+  let ctx = syncSetup({}, lastPlay(61000));
+  await open(ctx, VIDEO_URL);
+  assert.equal(ctx.iina.props["file-local-options/start"], "30");
+  assert.ok(!ctx.iina.osds.some((m) => m.startsWith("从上次")));
+
+  // 刷新播放地址时沿用当前进度，即使是 0 也不跳到播放记录
+  ctx = syncSetup({}, lastPlay(61000));
+  await open(ctx, PLAIN_URL);
+  ctx.iina.props["time-pos"] = 0;
+  ctx.player.handleAction({ type: "reload" });
+  delete ctx.iina.props["file-local-options/start"];
+  ctx.iina.props["stream-open-filename"] = PLAIN_URL;
+  await ctx.player.onLoad();
+  assert.equal(ctx.iina.props["file-local-options/start"], undefined);
+
+  for (const v2 of [lastPlay(61000, 999), lastPlay(100000), lastPlay(0)]) {
+    ctx = syncSetup({}, v2);
+    await open(ctx, PLAIN_URL);
+    assert.equal(ctx.iina.props["file-local-options/start"], undefined, JSON.stringify(v2.data));
+  }
+});
+
+test("未登录或关闭同步时不续播也不上报", async () => {
+  for (const prefs of [{ cookie_source: "none" }, { sync_progress: false }]) {
+    const ctx = syncSetup(prefs, lastPlay(61000));
+    await open(ctx, PLAIN_URL);
+    assert.equal(ctx.iina.props["file-local-options/start"], undefined);
+    assert.equal(ctx.iina.timers.active(), 0);
+    ctx.iina.props["time-pos"] = 50;
+    await ctx.player.onEndFile();
+    assert.deepEqual(ctx.reported, []);
+  }
+});
+
+test("关闭字幕时仍然读取播放记录", async () => {
+  const ctx = syncSetup({ subtitle_enable: false }, lastPlay(61000));
+  await open(ctx, PLAIN_URL);
+  assert.equal(ctx.iina.props["file-local-options/start"], "61");
+  assert.equal(ctx.iina.commands.filter((c) => c[0] === "sub-add").length, 1);
+});
+
+test("播放中每走 15 秒上报一次进度，暂停时立即上报", async () => {
+  const ctx = syncSetup();
+  await open(ctx, PLAIN_URL);
+  const { props, timers } = ctx.iina;
+  assert.equal(timers.active(), 1);
+  props["time-pos"] = 10.9;
+  await timers.tick();
+  assert.deepEqual(ctx.reported, []);
+  props["time-pos"] = 20.2;
+  await timers.tick();
+  props["time-pos"] = 25;
+  await timers.tick();
+  assert.deepEqual(ctx.reported, [{ aid: "2", cid: "1001", progress: "20", csrf: "tok" }]);
+  // 往回拖动同样会上报
+  props["time-pos"] = 3;
+  await timers.tick();
+  assert.equal(ctx.reported.at(-1).progress, "3");
+
+  props["time-pos"] = 8;
+  props.pause = true;
+  await ctx.player.onPause();
+  props.pause = false;
+  await ctx.player.onPause();
+  assert.deepEqual(ctx.reported.map((r) => r.progress), ["20", "3", "8"]);
+});
+
+test("换视频时用最后记下的位置上报并停止计时", async () => {
+  const ctx = syncSetup();
+  await open(ctx, PLAIN_URL);
+  ctx.iina.props["time-pos"] = 40;
+  await ctx.iina.timers.tick();
+  // 文件已经卸载，拿不到 time-pos
+  delete ctx.iina.props["time-pos"];
+  await ctx.player.onEndFile();
+  assert.deepEqual(ctx.reported.map((r) => r.progress), ["40"]);
+  assert.equal(ctx.iina.timers.active(), 0);
+  // 已经报过的位置不重复上报
+  await ctx.player.onEndFile();
+  assert.equal(ctx.reported.length, 1);
+});
+
+test("关闭窗口时上报当前进度", async () => {
+  const ctx = syncSetup();
+  await open(ctx, PLAIN_URL);
+  ctx.iina.props["time-pos"] = 33.3;
+  await ctx.player.onWindowClose();
+  assert.deepEqual(ctx.reported.map((r) => r.progress), ["33"]);
+  assert.equal(ctx.iina.timers.active(), 0);
+});
+
+test("没有 bili_jct 时不上报；上报失败只记录警告", async () => {
+  let ctx = syncSetup({ cookie: "SESSDATA=s; DedeUserID=42; buvid3=b" });
+  await open(ctx, PLAIN_URL);
+  ctx.iina.props["time-pos"] = 50;
+  await ctx.player.onWindowClose();
+  assert.deepEqual(ctx.reported, []);
+
+  ctx = syncSetup({}, null, { code: -101, message: "账号未登录" });
+  await open(ctx, PLAIN_URL);
+  ctx.iina.props["time-pos"] = 50;
+  await ctx.player.onWindowClose();
+  assert.equal(ctx.reported.length, 1);
+  assert.ok(ctx.env.logs.some(([lvl, m]) => lvl === "warn" && m.includes("播放进度上报失败")));
+  // 不影响侧边栏显示的解析错误
+  assert.equal(ctx.bili.state.lastError, "");
+});
+
+test("直播不上报进度", async () => {
+  const ctx = setup(LOGIN, LIVE_ROUTES);
+  await open(ctx, "https://live.bilibili.com/7734200");
+  assert.equal(ctx.iina.timers.active(), 0);
 });

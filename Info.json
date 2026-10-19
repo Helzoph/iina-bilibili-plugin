@@ -38,6 +38,8 @@
     "danmaku_fixed_time": 5,
     "danmaku_bold": true,
     "subtitle_enable": true,
+    "autoplay_next": true,
+    "sync_progress": true,
     "max_items": 100,
     "debug": false
   }

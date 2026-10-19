@@ -35,16 +35,25 @@ function nodeEnv(prefs, opts) {
   };
 }
 
-// 模拟 IINA API；mpv 属性保存在 props 里，命令记录在 commands 里
+// 模拟 IINA API；mpv 属性保存在 props 里，命令记录在 commands 里。
+// timers 只记录定时器，由测试调用 tick() 手动触发，不会让测试进程挂住
 function fakeIina(prefs) {
   const props = {};
   const commands = [];
   const osds = [];
   const menuItems = [];
+  const intervals = new Map();
+  let timerId = 0;
+  const timers = {
+    setInterval: (fn, ms) => { intervals.set(++timerId, { fn, ms }); return timerId; },
+    clearInterval: (id) => { intervals.delete(id); },
+    active: () => intervals.size,
+    tick: () => Promise.all([...intervals.values()].map((t) => t.fn())),
+  };
   const item = (title, action, o) => ({ title, action, items: [], enabled: true, selected: false, ...(o || {}),
     addSubMenuItem(i) { this.items.push(i); return this; } });
   return {
-    props, commands, osds, menuItems,
+    props, commands, osds, menuItems, timers,
     mpv: {
       getString: (k) => (props[k] === undefined ? "" : String(props[k])),
       getNumber: (k) => Number(props[k]),

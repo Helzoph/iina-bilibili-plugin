@@ -265,6 +265,45 @@ test("httpGet 指定 cookie:false 时不带 Cookie", async () => {
   assert.equal(env.requests[0].referer, c.REFERER);
 });
 
+test("httpPost 通过文件发送表单，csrf 与 Cookie 都不出现在命令参数中，发完清空文件", async () => {
+  const bodies = [];
+  const env = mockEnv({ cookie_source: "manual", cookie: "SESSDATA=secret; bili_jct=tok3n; buvid3=b" }, [
+    [/report/, (url, req) => {
+      const file = req.args[req.args.indexOf("--data-binary") + 1].slice(1);
+      bodies.push(require("fs").readFileSync(file, "utf8"));
+      return '{"code":0}';
+    }],
+  ]);
+  const bili = c.createBili(env);
+  assert.equal(await bili.csrf(), "tok3n");
+  const [a, b] = await Promise.all([
+    bili.httpPost("https://api.bilibili.com/report", { aid: 1, title: "a&b", csrf: "tok3n" }),
+    bili.httpPost("https://api.bilibili.com/report", { aid: 2, csrf: "tok3n" }),
+  ]);
+  assert.deepEqual([a, b], ['{"code":0}', '{"code":0}']);
+  // 同一实例的 POST 依次发送，不会互相覆盖表单文件
+  assert.deepEqual(bodies, ["aid=1&title=a%26b&csrf=tok3n", "aid=2&csrf=tok3n"]);
+  const req = env.requests[0];
+  assert.equal(req.cookie, "SESSDATA=secret; bili_jct=tok3n; buvid3=b");
+  assert.ok(!req.args.some((x) => /secret|tok3n/.test(x)));
+  const file = req.args[req.args.indexOf("--data-binary") + 1].slice(1);
+  assert.equal(require("fs").readFileSync(file, "utf8"), "");
+});
+
+test("httpPost 在 curl 失败后清空表单文件，后面的请求照常发送", async () => {
+  const env = mockEnv({ cookie_source: "none" }, [[/fail/, null], [/ok/, "ok"], [/spi/, { code: 0, data: { b_3: "B3" } }]]);
+  const bili = c.createBili(env);
+  assert.equal(await bili.httpPost("https://a/fail", { csrf: "x" }), null);
+  assert.equal(await bili.httpPost("https://a/ok", { csrf: "y" }), "ok");
+  const req = env.requests.find((r) => r.url === "https://a/ok");
+  assert.equal(require("fs").readFileSync(req.args[req.args.indexOf("--data-binary") + 1].slice(1), "utf8"), "");
+});
+
+test("csrf 在没有 bili_jct 时为空", async () => {
+  const bili = c.createBili(mockEnv({ cookie_source: "manual", cookie: "SESSDATA=s; DedeUserID=1" }, []));
+  assert.equal(await bili.csrf(), "");
+});
+
 test("cookieString 在用户 Cookie 已含 buvid3 时不再领取", async () => {
   const env = mockEnv({ cookie_source: "manual", cookie: "buvid3=mine; SESSDATA=s" }, []);
   const bili = c.createBili(env);

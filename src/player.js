@@ -8,6 +8,10 @@ const { videoEdl, playlistM3u, ccToSrt } = require("./media");
 const { toAss } = require("./danmaku");
 
 const DANMAKU_TITLE = "弹幕";
+// 离结尾不到这么多秒就算看完，下次从头播放。看完时上报的是最后一次采样的位置（最多早 5 秒），总在这个范围里
+const FINISHED_MARGIN = 30;
+const PROGRESS_SAMPLE_MS = 5000;
+const PROGRESS_STEP = 15;
 const CODEC_NAMES = { hevc: "HEVC (H.265)", avc: "AVC (H.264)", av1: "AV1" };
 
 // 侧边栏可调的弹幕样式：键名 -> [首选项, 把网页传来的值转成首选项的值，不合法时返回 undefined]
@@ -22,8 +26,16 @@ const DANMAKU_STYLE = {
   bold: ["danmaku_bold", (v) => (typeof v === "boolean" ? v : undefined)],
 };
 
+function clock(t) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const h = Math.floor(t / 3600);
+  return (h ? h + ":" + pad(Math.floor(t / 60) % 60) : Math.floor(t / 60)) + ":" + pad(t % 60);
+}
+
 function createPlayer(api, bili, parser) {
   const { mpv, core, menu, utils, preferences } = api;
+  // 调用时才取全局的定时器函数，环境里没有时只影响进度上报，不影响插件加载
+  const timers = api.timers || { setInterval: (fn, ms) => setInterval(fn, ms), clearInterval: (id) => clearInterval(id) };
 
   // 当前正在播放的 B 站内容；next 是重新加载时要沿用的状态（起播位置、清晰度等）
   let current = null;
@@ -65,10 +77,15 @@ function createPlayer(api, bili, parser) {
     return ass;
   }
 
+  // 播放器信息：CC/AI 字幕列表与登录账号上次的播放进度
+  async function fetchPlayerInfo(info, wantProgress) {
+    if ((!bili.config().subtitle.enable && !wantProgress) || !info.bvid || !info.cid) return null;
+    return bili.api(`https://api.bilibili.com/x/player/v2?bvid=${info.bvid}&cid=${info.cid}`);
+  }
+
   // CC 字幕与 AI 字幕；未登录时接口通常不返回 AI 字幕
-  async function fetchSubtitles(info) {
-    if (!bili.config().subtitle.enable || !info.bvid || !info.cid) return [];
-    const data = await bili.api(`https://api.bilibili.com/x/player/v2?bvid=${info.bvid}&cid=${info.cid}`);
+  async function fetchSubtitles(data) {
+    if (!bili.config().subtitle.enable) return [];
     const subs = (data && data.subtitle && data.subtitle.subtitles) || [];
     const out = [];
     for (const sub of subs) {
@@ -89,8 +106,19 @@ function createPlayer(api, bili, parser) {
     mpv.set("file-local-options/" + name, value);
   }
 
+  // 上次看到的位置（秒），只认同一个分 P / 同一集；快看完的不再续播
+  function resumePosition(data, info) {
+    const t = Math.floor(Number(data && data.last_play_time) / 1000);
+    if (!(t > 0) || String(data.last_play_cid) !== String(info.cid)) return 0;
+    return info.duration && t > info.duration - FINISHED_MARGIN ? 0 : t;
+  }
+
   async function loadVideo(info, carry) {
-    const [xml, subs] = await Promise.all([fetchDanmaku(info), fetchSubtitles(info)]);
+    info.sync = bili.config().syncProgress && !!info.aid && !info.preview && !!(await bili.uid());
+    const playerInfo = fetchPlayerInfo(info, info.sync);
+    const [xml, subs, resume] = await Promise.all([
+      fetchDanmaku(info), playerInfo.then(fetchSubtitles), playerInfo.then((data) => resumePosition(data, info)),
+    ]);
     if (carry.qn) {
       const i = info.video.findIndex((v) => v.qn === carry.qn);
       if (i >= 0) info.videoIndex = i;
@@ -111,8 +139,13 @@ function createPlayer(api, bili, parser) {
     setLocal("http-header-fields", ["Referer: " + REFERER]);
     setLocal("user-agent", UA);
     setLocal("force-media-title", info.title || "");
-    const start = carry.start !== undefined ? carry.start : info.start;
-    if (start) setLocal("start", String(start));
+    // 链接里的 t= 和重新加载时沿用的进度优先于上次的播放记录
+    let from = carry.start !== undefined ? carry.start : info.start;
+    if (from === undefined || from === null) {
+      from = info.sync ? resume : 0;
+      if (from) info.resumed = from;
+    }
+    if (from) setLocal("start", String(from));
 
     if (xml) {
       // 弹幕也可能作为第二字幕与 CC 字幕同时显示，此时要保留 ASS 里的位置和动画
@@ -314,6 +347,77 @@ function createPlayer(api, bili, parser) {
     reload({ start: position(), qn: v && v.qn, audioId: a && a.id });
   }
 
+  // ---------------------------------------------------------------- 连播
+
+  // 单独打开某一 P、合集里的某一集或番剧的某一集时，把后面的内容追加到播放列表，轮到时再解析。
+  // 只在它是播放列表最后一项且不是从列表展开出来的（playlist-path 为空）时追加，
+  // 列表页展开的条目和这里追加的条目都带 playlist-path，不会重复追加
+  function appendFollowing() {
+    const items = current.following;
+    if (!bili.config().autoNext || !items || !items.length) return;
+    const pos = mpv.getNumber("playlist-pos");
+    if (!(pos >= 0) || pos !== mpv.getNumber("playlist-count") - 1) return;
+    if (mpv.getString(`playlist/${pos}/playlist-path`)) return;
+    mpv.command("loadlist", [playlistM3u(items), "append"]);
+    bili.log(`已把后面的 ${items.length} 项加入播放列表`);
+  }
+
+  // ---------------------------------------------------------------- 播放进度
+
+  // 登录后把进度报给 B 站，网页端的历史记录和其他设备的断点续播都能看到。
+  // 每 5 秒记一次当前位置，比上次上报多走了 15 秒就上报；暂停、换视频、关闭窗口时立即上报。
+  // 换视频时 mpv 已经卸载文件拿不到 time-pos，只能用最后一次记下的位置
+  let progress = null;
+
+  function sendProgress(info, pos) {
+    return bili.csrf().then(async (csrf) => {
+      if (!csrf) return;
+      const text = await bili.httpPost("https://api.bilibili.com/x/v2/history/report", { aid: info.aid, cid: info.cid, progress: pos, csrf });
+      let code;
+      try {
+        code = JSON.parse(text).code;
+      } catch (e) {
+        code = undefined;
+      }
+      if (code !== 0) bili.warn("播放进度上报失败: " + str(text).slice(0, 200));
+      else bili.log(`播放进度 ${pos}s 已上报`);
+    }).catch((e) => bili.warn("播放进度上报失败: " + e));
+  }
+
+  // 返回上报的 Promise，没有需要上报的内容时返回 undefined
+  function reportProgress(pos, step) {
+    if (!progress) return undefined;
+    if (pos > 0) progress.pos = pos;
+    pos = progress.pos;
+    if (!(pos > 0) || Math.abs(pos - progress.sent) < (step || 1)) return undefined;
+    progress.sent = pos;
+    return sendProgress(progress.info, pos);
+  }
+
+  function startProgress(info) {
+    stopProgress();
+    if (!info.sync) return;
+    const pos = position();
+    progress = { info, pos, sent: pos, timer: timers.setInterval(() => reportProgress(position(), PROGRESS_STEP), PROGRESS_SAMPLE_MS) };
+  }
+
+  function stopProgress() {
+    if (!progress) return;
+    timers.clearInterval(progress.timer);
+    progress = null;
+  }
+
+  function onPause() {
+    if (loaded && mpv.getFlag("pause")) return reportProgress(position());
+    return undefined;
+  }
+
+  function onWindowClose() {
+    const sending = reportProgress(position());
+    stopProgress();
+    return sending;
+  }
+
   // ---------------------------------------------------------------- 菜单
 
   // IINA 1.5.0 在 PlayerCore.first 的一次性初始化里执行插件脚本，此时 forceUpdate 会重入该初始化导致崩溃，
@@ -485,6 +589,9 @@ function createPlayer(api, bili, parser) {
     if (current.hasDanmaku && bili.config().danmaku.show) setDanmaku(true);
     danmakuVisible = isDanmakuVisible();
     loaded = true;
+    if (current.resumed) osd("从上次看到的 " + clock(current.resumed) + " 继续播放");
+    startProgress(current);
+    appendFollowing();
     buildMenu();
   }
 
@@ -507,10 +614,13 @@ function createPlayer(api, bili, parser) {
 
   function onEndFile() {
     loaded = false;
+    const sending = reportProgress(0);
+    stopProgress();
+    return sending;
   }
 
   return {
-    onLoad, onWindowLoaded, onFileLoaded, onTrackChanged, onEndFile, buildMenu, updateLoginLabel,
+    onLoad, onWindowLoaded, onFileLoaded, onTrackChanged, onEndFile, onPause, onWindowClose, buildMenu, updateLoginLabel,
     snapshot, handleAction,
     toggleDanmaku, setDanmakuStyle, selectVideo, selectAudio, selectLiveQuality, selectCodec,
     get current() { return current; },

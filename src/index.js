@@ -47,6 +47,8 @@ event.on("iina.window-loaded", () => {
 });
 event.on("iina.file-loaded", () => player.onFileLoaded());
 event.on("mpv.end-file", () => player.onEndFile());
+event.on("mpv.pause.changed", () => player.onPause());
+event.on("iina.window-will-close", () => player.onWindowClose());
 event.on("mpv.vid.changed", () => player.onTrackChanged("video"));
 event.on("mpv.aid.changed", () => player.onTrackChanged("audio"));
 event.on("mpv.sid.changed", () => player.onTrackChanged("sub"));

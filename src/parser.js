@@ -115,7 +115,7 @@ function createParser(bili) {
 
   // 统一使用不带 /wbi/ 的接口路径：携带 buvid 却未做 WBI 签名时请求 /wbi/ 接口会被随机风控。
   // try_look=1 让未登录用户也能拿到 720P/1080P，但已登录时带上它反而会被限制在 1080P，所以只在未登录时使用
-  // info: { bvid, cid, epId, title, author, web, width, height, start }
+  // info: { bvid, aid, cid, epId, title, author, web, width, height, start, duration }
   async function resolveStream(info) {
     const cfg = bili.config().video;
     const params = `cid=${info.cid}&qn=127&fnval=4048&fourk=1` + ((await bili.uid()) ? "" : "&try_look=1");
@@ -126,7 +126,7 @@ function createParser(bili) {
 
     const result = {
       type: "video", title: info.title, author: info.author, web: info.web, start: info.start,
-      bvid: info.bvid, cid: info.cid, width: info.width, height: info.height,
+      bvid: info.bvid, aid: info.aid, cid: info.cid, width: info.width, height: info.height, duration: info.duration,
       video: [], audio: [], videoIndex: 0, audioIndex: 0, url: null,
     };
     if (play.dash && play.dash.video && play.dash.video.length) {
@@ -153,6 +153,30 @@ function createParser(bili) {
     return result;
   }
 
+  function pageItem(data, page) {
+    return {
+      url: `https://www.bilibili.com/video/${data.bvid}?p=${page.page}`,
+      title: `P${page.page} ${page.part}`,
+      author: data.owner && data.owner.name,
+      duration: page.duration,
+    };
+  }
+
+  // 单独打开某一 P 或合集里的某一集时，接下来可以连播的内容：先是后面的分 P，再是合集里排在后面的视频
+  function videoFollowing(data, page) {
+    const items = (data.pages || []).filter((pg) => pg.page > page.page).map((pg) => pageItem(data, pg));
+    const eps = [];
+    for (const sec of (data.ugc_season && data.ugc_season.sections) || []) eps.push(...(sec.episodes || []));
+    const i = eps.findIndex((e) => e.bvid === data.bvid);
+    if (i >= 0) {
+      for (const e of eps.slice(i + 1)) {
+        const arc = e.arc || {};
+        items.push(videoItem(e.bvid, e.title || arc.title, arc.author && arc.author.name, arc.duration || (e.page && e.page.duration), arc.pic));
+      }
+    }
+    return items.slice(0, limit());
+  }
+
   async function video(url, id) {
     const key = id.startsWith("BV") ? "bvid=" + id : "aid=" + id.replace(/^av/, "");
     const data = await bili.api("https://api.bilibili.com/x/web-interface/view?" + key);
@@ -162,17 +186,7 @@ function createParser(bili) {
     const cid = query(url, "cid");
 
     // 未指定分 P 的多 P 视频展开为分 P 列表
-    if (!p && !cid && pages.length > 1) {
-      return {
-        type: "list",
-        items: pages.map((page) => ({
-          url: `https://www.bilibili.com/video/${data.bvid}?p=${page.page}`,
-          title: `P${page.page} ${page.part}`,
-          author: data.owner && data.owner.name,
-          duration: page.duration,
-        })),
-      };
-    }
+    if (!p && !cid && pages.length > 1) return list(pages.map((page) => pageItem(data, page)));
 
     let page = pages[(p || 1) - 1] || pages[0];
     if (cid) page = pages.find((pg) => String(pg.cid) === cid) || page;
@@ -183,12 +197,14 @@ function createParser(bili) {
     const [w, h] = dim.rotate === 1 ? [dim.height, dim.width] : [dim.width, dim.height];
     // 番剧/电影的 BV 号会重定向到番剧页面，需要使用番剧取流接口
     const ep = str(data.redirect_url).match(/bangumi\/play\/ep(\d+)/);
-    return resolveStream({
-      bvid: data.bvid, cid: String(page.cid), epId: ep && ep[1], title,
+    const result = await resolveStream({
+      bvid: data.bvid, aid: data.aid, cid: String(page.cid), epId: ep && ep[1], title,
       author: data.owner && data.owner.name,
       web: `https://www.bilibili.com/video/${data.bvid}` + (pages.length > 1 ? `?p=${page.page}` : ""),
-      width: w, height: h, start: seconds(query(url, "t")),
+      width: w, height: h, start: seconds(query(url, "t")), duration: page.duration,
     });
+    if (result) result.following = videoFollowing(data, page);
+    return result;
   }
 
   // ---------------------------------------------------------------- 番剧
@@ -201,34 +217,39 @@ function createParser(bili) {
     return title;
   }
 
+  function episodeItem(season, ep) {
+    return {
+      url: "https://www.bilibili.com/bangumi/play/ep" + ep.id,
+      title: episodeTitle(season.title, ep),
+      duration: ep.duration && ep.duration / 1000,
+    };
+  }
+
   async function seasonList(params) {
     const data = await bili.api("https://api.bilibili.com/pgc/view/web/season?" + params);
     if (!data) return null;
-    return {
-      type: "list",
-      items: (data.episodes || []).map((ep) => ({
-        url: "https://www.bilibili.com/bangumi/play/ep" + ep.id,
-        title: episodeTitle(data.title, ep),
-        duration: ep.duration && ep.duration / 1000,
-      })),
-    };
+    return list((data.episodes || []).map((ep) => episodeItem(data, ep)));
   }
 
   async function episode(url, epId) {
     const data = await bili.api("https://api.bilibili.com/pgc/view/web/season?ep_id=" + epId);
     if (!data) return null;
-    const ep = (data.episodes || []).find((e) => String(e.id) === epId);
-    if (!ep) {
+    const episodes = data.episodes || [];
+    const i = episodes.findIndex((e) => String(e.id) === epId);
+    if (i < 0) {
       bili.fail("番剧中找不到 ep" + epId);
       return null;
     }
+    const ep = episodes[i];
     const dim = ep.dimension || {};
-    return resolveStream({
-      epId, bvid: ep.bvid, cid: String(ep.cid), title: episodeTitle(data.title, ep),
+    const result = await resolveStream({
+      epId, bvid: ep.bvid, aid: ep.aid, cid: String(ep.cid), title: episodeTitle(data.title, ep),
       author: data.up_info && data.up_info.uname,
       web: "https://www.bilibili.com/bangumi/play/ep" + epId,
-      width: dim.width, height: dim.height, start: seconds(query(url, "t")),
+      width: dim.width, height: dim.height, start: seconds(query(url, "t")), duration: ep.duration && ep.duration / 1000,
     });
+    if (result) result.following = episodes.slice(i + 1, i + 1 + limit()).map((e) => episodeItem(data, e));
+    return result;
   }
 
   async function mdToSs(md) {

@@ -21,6 +21,26 @@ const VIEW_MULTI = {
   },
 };
 
+// 属于合集（ugc_season）的单 P 视频，排在合集第 2 位
+const VIEW_SEASON = {
+  code: 0,
+  data: {
+    bvid: "BV1s2", aid: 12, title: "合集第二期", owner: { name: "UP" }, cid: 3002,
+    pages: [{ cid: 3002, page: 1, part: "P1", duration: 300 }],
+    ugc_season: {
+      id: 9, title: "合集",
+      sections: [
+        { title: "正片", episodes: [
+          { bvid: "BV1s1", title: "第一期", arc: { duration: 200, pic: "http://i0.hdslb.com/1.jpg", author: { name: "UP" } } },
+          { bvid: "BV1s2", title: "第二期", arc: { duration: 300 } },
+          { bvid: "BV1s3", title: "第三期", arc: { duration: 400, pic: "//i0.hdslb.com/3.jpg", author: { name: "UP" } } },
+        ] },
+        { title: "番外", episodes: [{ bvid: "BV1s4", title: "番外篇", page: { duration: 50 } }] },
+      ],
+    },
+  },
+};
+
 function dashStream(id, codecid, w, h, host) {
   const codecs = { 7: "avc1.640032", 12: "hev1.1.6.L150.90", 13: "av01.0.13M.08" }[codecid];
   return {
@@ -112,5 +132,5 @@ const ROOM_PLAY = {
 };
 
 module.exports = {
-  VIEW_SINGLE, VIEW_MULTI, PLAYURL, PLAYURL_PREVIEW, SEASON, DANMAKU_XML, PLAYER_V2, CC_JSON, ROOM_BASE, ROOM_PLAY, dashStream,
+  VIEW_SINGLE, VIEW_MULTI, VIEW_SEASON, PLAYURL, PLAYURL_PREVIEW, SEASON, DANMAKU_XML, PLAYER_V2, CC_JSON, ROOM_BASE, ROOM_PLAY, dashStream,
 };

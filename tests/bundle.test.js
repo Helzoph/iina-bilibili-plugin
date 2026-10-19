@@ -39,7 +39,9 @@ function run() {
     utils: { ...fake.utils, exec: async () => ({ status: 1, stdout: "", stderr: "" }), resolvePath: (p) => "/tmp/" + p },
     console: { log: (m) => logs.push(m), warn: (m) => logs.push(m), error: (m) => logs.push(m) },
   };
-  vm.runInNewContext(code, { iina, Promise, JSON, Date, Math, Number, String, Object, Array, Set, Map, RegExp, Error });
+  // IINA 提供全局的 setInterval/clearInterval，这里只记录不执行
+  const { setInterval, clearInterval } = fake.timers;
+  vm.runInNewContext(code, { iina, Promise, JSON, Date, Math, Number, String, Object, Array, Set, Map, RegExp, Error, setInterval, clearInterval });
   return { iina: fake, hooks, events, logs, code, forceUpdates, sidebar, opened };
 }
 
@@ -55,7 +57,8 @@ test("打包产物以 on_load 优先级 5 注册异步钩子", () => {
 test("打包产物监听文件加载与轨道变化事件，并建立菜单", () => {
   const { events, iina } = run();
   assert.deepEqual(Object.keys(events).sort(), [
-    "iina.file-loaded", "iina.window-loaded", "mpv.aid.changed", "mpv.end-file", "mpv.secondary-sid.changed", "mpv.sid.changed", "mpv.vid.changed",
+    "iina.file-loaded", "iina.window-loaded", "iina.window-will-close",
+    "mpv.aid.changed", "mpv.end-file", "mpv.pause.changed", "mpv.secondary-sid.changed", "mpv.sid.changed", "mpv.vid.changed",
   ]);
   assert.equal(iina.menuItems.length, 1);
   assert.equal(iina.menuItems[0].title, "Bilibili");

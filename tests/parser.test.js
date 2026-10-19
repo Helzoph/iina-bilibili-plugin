@@ -180,6 +180,38 @@ test("route 播放指定的分 P，也可按 cid 选择", async () => {
   assert.ok(env.requests.filter((q) => /playurl/.test(q.url)).every((q) => /cid=2002/.test(q.url)));
 });
 
+test("route 单独打开某一 P 时带上后面的分 P 作为连播内容", async () => {
+  const { parser } = setup(ANON, [
+    [/web-interface\/view/, F.VIEW_MULTI],
+    [/player\/playurl/, F.PLAYURL],
+  ]);
+  const p1 = await parser.route("https://www.bilibili.com/video/BV1multi?p=1");
+  assert.equal(p1.aid, 3);
+  assert.equal(p1.duration, 60);
+  assert.deepEqual(p1.following, [{ url: "https://www.bilibili.com/video/BV1multi?p=2", title: "P2 第二集", author: "UP", duration: 70 }]);
+  assert.deepEqual((await parser.route("https://www.bilibili.com/video/BV1multi?p=2")).following, []);
+});
+
+test("route 打开合集里的视频时带上合集中排在后面的视频，跨分节", async () => {
+  const { parser } = setup({ ...ANON, max_items: 2 }, [
+    [/web-interface\/view/, F.VIEW_SEASON],
+    [/player\/playurl/, F.PLAYURL],
+  ]);
+  const r = await parser.route("https://www.bilibili.com/video/BV1s2");
+  assert.deepEqual(r.following, [
+    { url: "https://www.bilibili.com/video/BV1s3", title: "第三期", author: "UP", duration: 400, cover: "https://i0.hdslb.com/3.jpg" },
+    { url: "https://www.bilibili.com/video/BV1s4", title: "番外篇", author: undefined, duration: 50 },
+  ]);
+});
+
+test("route 播放单 P 且不属于合集的视频时没有连播内容", async () => {
+  const { parser } = setup(ANON, [
+    [/web-interface\/view/, F.VIEW_SINGLE],
+    [/player\/playurl/, F.PLAYURL],
+  ]);
+  assert.deepEqual((await parser.route("https://www.bilibili.com/video/BV1xx411c7mD")).following, []);
+});
+
 test("route 对重定向到番剧页的 BV 号使用番剧取流接口", async () => {
   const view = { code: 0, data: { ...F.VIEW_SINGLE.data, redirect_url: "https://www.bilibili.com/bangumi/play/ep5001" } };
   const { parser, env } = setup(ANON, [
@@ -229,6 +261,9 @@ test("route 播放番剧单集时使用 DASH 轨道", async () => {
   assert.equal(r.start, 10);
   assert.equal(r.preview, undefined);
   assert.equal(r.video.length, 4);
+  assert.equal(r.aid, 1);
+  assert.equal(r.duration, 1440);
+  assert.deepEqual(r.following, [{ url: "https://www.bilibili.com/bangumi/play/ep5002", title: "【会员】番剧名 第2话 继续", duration: 1440 }]);
 });
 
 test("route 在番剧中找不到对应集数时返回 null", async () => {

@@ -31,6 +31,8 @@ const DEFAULTS = {
   danmaku_fixed_time: 5,
   danmaku_bold: true,
   subtitle_enable: true,
+  autoplay_next: true,
+  sync_progress: true,
   max_items: 100,
   debug: false,
 };
@@ -180,6 +182,8 @@ function createBili(env) {
         bold: !!pref("danmaku_bold"),
       },
       subtitle: { enable: !!pref("subtitle_enable") },
+      autoNext: !!pref("autoplay_next"),
+      syncProgress: !!pref("sync_progress"),
       maxItems: Math.max(1, num("max_items")),
     };
   }
@@ -218,6 +222,28 @@ function createBili(env) {
     const args = ["-sSL", "--compressed", "--max-time", "15", "-A", UA, "-H", "Referer: " + (opts.referer || REFERER)];
     const cookie = opts.cookie === false ? "" : await cookieString();
     return curl(args.concat(cookieHeaderArgs(cookie), [url]));
+  }
+
+  // 表单里有 csrf，和 Cookie 一样写进文件再传给 curl。每个插件实例（播放器窗口）用自己的文件，
+  // 实例内的 POST 依次发送以免互相覆盖，发完清空文件
+  const postFile = "@tmp/post-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) + ".txt";
+  let posting = Promise.resolve();
+  function httpPost(url, form, opts) {
+    opts = opts || {};
+    const body = Object.keys(form).map((k) => k + "=" + encodeURIComponent(str(form[k]))).join("&");
+    const run = posting.then(async () => {
+      log("POST " + url);
+      const cookie = opts.cookie === false ? "" : await cookieString();
+      env.write(postFile, body);
+      try {
+        return await curl(["-sS", "--compressed", "--max-time", "15", "-A", UA, "-H", "Referer: " + (opts.referer || REFERER)]
+          .concat(cookieHeaderArgs(cookie), ["--data-binary", "@" + env.resolve(postFile), url]));
+      } finally {
+        env.write(postFile, "");
+      }
+    });
+    posting = run.catch(() => null);
+    return run;
   }
 
   // 用 HEAD 请求探测媒体地址是否可用。直播 FLV/TS 服务器无视 Range 持续推流，GET 会一直等到超时，所以用 HEAD。
@@ -307,6 +333,12 @@ function createBili(env) {
     return m ? m[1] : null;
   }
 
+  // 写操作要带的 csrf 就是 Cookie 里的 bili_jct，未登录时为空
+  async function csrf() {
+    const m = (await userCookie(false)).match(/(?:^|;\s*)bili_jct=([^;\s]+)/);
+    return m ? m[1] : "";
+  }
+
   // ---------------------------------------------------------------- 接口
 
   const state = { lastError: "" };
@@ -355,8 +387,8 @@ function createBili(env) {
 
   return {
     config, pref, log, fail, state,
-    httpGet, httpOk, resolveRedirect, api,
-    userCookie, cookieString, uid,
+    httpGet, httpPost, httpOk, resolveRedirect, api,
+    userCookie, cookieString, uid, csrf,
     warn: (msg) => env.warn("[bilibili] " + msg),
   };
 }
