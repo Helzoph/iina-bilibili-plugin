@@ -1,0 +1,44 @@
+{
+  "name": "Bilibili",
+  "identifier": "io.github.helzoph.bilibili",
+  "version": "1.0.0",
+  "description": "直接打开 B 站视频、番剧、直播和各类列表链接；清晰度显示在“视频轨道”菜单中可随时切换，弹幕作为可开关的字幕轨。",
+  "author": {
+    "name": "helzoph"
+  },
+  "entry": "dist/index.js",
+  "permissions": [
+    "show-osd",
+    "file-system",
+    "network-request"
+  ],
+  "allowedDomains": [
+    "*"
+  ],
+  "sidebarTab": {
+    "name": "Bilibili"
+  },
+  "preferencesPage": "pref.html",
+  "preferenceDefaults": {
+    "cookie_source": "firefox",
+    "cookie": "",
+    "max_quality": "127",
+    "video_codec": "hevc",
+    "hires_audio": true,
+    "live_quality": "10000",
+    "live_codec": "avc",
+    "live_format": "flv",
+    "danmaku_enable": true,
+    "danmaku_show": true,
+    "danmaku_font": "",
+    "danmaku_font_size": 48,
+    "danmaku_opacity": 0.8,
+    "danmaku_display_area": 0.8,
+    "danmaku_scroll_time": 10,
+    "danmaku_fixed_time": 5,
+    "danmaku_bold": true,
+    "subtitle_enable": true,
+    "max_items": 100,
+    "debug": false
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "iina-plugin-bilibili",
+  "version": "1.0.0",
+  "private": true,
+  "description": "IINA 的 B 站插件：视频、番剧、直播、弹幕与清晰度切换",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node build.js && node --test 'tests/*.test.js'",
+    "coverage": "node build.js && node --test --experimental-test-coverage --test-coverage-include='src/**' 'tests/*.test.js'",
+    "pack": "just pack"
+  }
+}

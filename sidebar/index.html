@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bilibili</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --label: rgba(0, 0, 0, 0.85);
+      --secondary: rgba(0, 0, 0, 0.5);
+      --tertiary: rgba(0, 0, 0, 0.26);
+      --fill: rgba(0, 0, 0, 0.05);
+      --fill-hover: rgba(0, 0, 0, 0.08);
+      --separator: rgba(0, 0, 0, 0.1);
+      --knob: #fff;
+      --pink: #fb7299;
+      --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --label: rgba(255, 255, 255, 0.86);
+        --secondary: rgba(255, 255, 255, 0.55);
+        --tertiary: rgba(255, 255, 255, 0.25);
+        --fill: rgba(255, 255, 255, 0.06);
+        --fill-hover: rgba(255, 255, 255, 0.1);
+        --separator: rgba(255, 255, 255, 0.1);
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      background: transparent;
+    }
+
+    body {
+      padding: 12px 12px 16px;
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      color: var(--label);
+      -webkit-user-select: none;
+      user-select: none;
+      cursor: default;
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+      border: 0;
+      background: none;
+      padding: 0;
+      cursor: default;
+    }
+
+    button:focus-visible {
+      outline: 2px solid #0a84ff;
+      outline: 2px solid -apple-system-control-accent;
+      outline-offset: 1px;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    /* ---------------- 标题 */
+
+    .header {
+      padding: 2px 2px 12px;
+    }
+
+    .badge {
+      display: inline-block;
+      margin-bottom: 6px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--pink);
+      background: rgba(251, 114, 153, 0.14);
+    }
+
+    .badge.live {
+      color: #fff;
+      background: var(--pink);
+    }
+
+    .title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+
+    .author {
+      margin-top: 4px;
+      color: var(--secondary);
+      font-size: 12px;
+    }
+
+    /* ---------------- 分组 */
+
+    .section {
+      margin-top: 14px;
+    }
+
+    .section-title {
+      margin: 0 0 6px 2px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--secondary);
+    }
+
+    .group {
+      border-radius: 8px;
+      background: var(--fill);
+      overflow: hidden;
+    }
+
+    /* 清晰度、音质：类似原生菜单，选中项打勾 */
+    .option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      min-height: 30px;
+      padding: 5px 10px;
+      text-align: left;
+    }
+
+    .option + .option {
+      box-shadow: inset 0 1px 0 var(--separator);
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .option:hover {
+        background: var(--fill-hover);
+      }
+    }
+
+    .option .name {
+      flex: 1;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .option .meta {
+      color: var(--secondary);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .option .check {
+      width: 14px;
+      flex: none;
+      text-align: center;
+      font-weight: 600;
+      color: #0a84ff;
+      color: -apple-system-control-accent;
+      opacity: 0;
+    }
+
+    .option[aria-checked="true"] .name {
+      font-weight: 600;
+    }
+
+    .option[aria-checked="true"] .check {
+      opacity: 1;
+    }
+
+    /* 编码：分段控件 */
+    .segmented {
+      display: flex;
+      padding: 2px;
+      border-radius: 8px;
+      background: var(--fill);
+    }
+
+    .segment {
+      flex: 1;
+      padding: 4px 0;
+      border-radius: 6px;
+      font-size: 12px;
+      text-align: center;
+      color: var(--secondary);
+      transition: background-color 160ms var(--ease-out), color 160ms var(--ease-out);
+    }
+
+    .segment[aria-checked="true"] {
+      color: var(--label);
+      font-weight: 600;
+      background: var(--fill-hover);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    }
+
+    /* 弹幕开关 */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--fill);
+      text-align: left;
+    }
+
+    .toggle-row .name {
+      flex: 1;
+    }
+
+    .toggle-row .hint {
+      color: var(--secondary);
+      font-size: 11px;
+    }
+
+    .switch {
+      position: relative;
+      flex: none;
+      width: 32px;
+      height: 18px;
+      border-radius: 9px;
+      background: var(--tertiary);
+      transition: background-color 160ms var(--ease-out);
+    }
+
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--knob);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+      transition: transform 160ms var(--ease-out);
+    }
+
+    .toggle-row[aria-checked="true"] .switch {
+      background: var(--pink);
+    }
+
+    .toggle-row[aria-checked="true"] .switch::after {
+      transform: translateX(14px);
+    }
+
+    .toggle-row:disabled {
+      opacity: 0.5;
+    }
+
+    /* 操作按钮 */
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .button {
+      padding: 6px 8px;
+      border-radius: 7px;
+      background: var(--fill);
+      font-size: 12px;
+      transition: transform 120ms var(--ease-out), background-color 120ms ease;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .button:hover {
+        background: var(--fill-hover);
+      }
+    }
+
+    .button:active,
+    .option:active,
+    .toggle-row:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    .option,
+    .toggle-row {
+      transition: transform 120ms var(--ease-out), background-color 120ms ease;
+    }
+
+    /* ---------------- 空状态与底部 */
+
+    .empty {
+      padding: 28px 8px 20px;
+      text-align: center;
+      color: var(--secondary);
+    }
+
+    .empty .headline {
+      margin-bottom: 4px;
+      font-weight: 600;
+      color: var(--label);
+    }
+
+    .empty.error .headline {
+      color: #ff453a;
+    }
+
+    .empty kbd {
+      font: inherit;
+      padding: 0 4px;
+      border-radius: 4px;
+      background: var(--fill-hover);
+    }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 18px;
+      padding: 10px 2px 0;
+      box-shadow: inset 0 1px 0 var(--separator);
+      font-size: 11px;
+      color: var(--secondary);
+    }
+
+    .footer .login {
+      flex: 1;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .link {
+      flex: none;
+      color: #0a84ff;
+      color: -apple-system-control-accent;
+      font-size: 11px;
+    }
+
+    .link:active {
+      opacity: 0.6;
+    }
+
+    /* ---------------- 顶部切换 */
+
+    .tabs {
+      margin-bottom: 12px;
+    }
+
+    .tabs .segmented {
+      background: var(--fill-hover);
+    }
+
+    /* ---------------- 浏览 */
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip {
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: var(--fill);
+      font-size: 12px;
+      color: var(--secondary);
+      transition: transform 120ms var(--ease-out), background-color 120ms ease, color 120ms ease;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .chip:hover {
+        background: var(--fill-hover);
+      }
+    }
+
+    .chip[aria-checked="true"] {
+      color: #fff;
+      font-weight: 600;
+      background: var(--pink);
+    }
+
+    .chip:active,
+    .card:active {
+      transform: scale(0.98);
+    }
+
+    .search {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .search input {
+      flex: 1;
+      min-width: 0;
+      padding: 4px 8px;
+      border: 0;
+      border-radius: 7px;
+      background: var(--fill);
+      font: inherit;
+      font-size: 12px;
+      color: inherit;
+      outline: none;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+
+    .search input:focus {
+      box-shadow: 0 0 0 2px #0a84ff;
+      box-shadow: 0 0 0 2px -apple-system-control-accent;
+    }
+
+    .search .segmented {
+      flex: none;
+      width: 92px;
+    }
+
+    .list-head {
+      display: flex;
+      align-items: center;
+      margin: 14px 2px 6px;
+    }
+
+    .list-head .section-title {
+      flex: 1;
+      margin: 0;
+    }
+
+    .cards {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .card {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      padding: 5px;
+      border-radius: 8px;
+      text-align: left;
+      transition: transform 120ms var(--ease-out), background-color 120ms ease;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .card:hover {
+        background: var(--fill-hover);
+      }
+    }
+
+    .card[aria-current="true"] {
+      background: rgba(251, 114, 153, 0.14);
+    }
+
+    .thumb {
+      position: relative;
+      flex: none;
+      width: 112px;
+      height: 63px;
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--fill-hover);
+    }
+
+    .thumb img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .thumb .tag {
+      position: absolute;
+      right: 4px;
+      bottom: 4px;
+      padding: 0 4px;
+      border-radius: 3px;
+      font-size: 10px;
+      line-height: 15px;
+      font-variant-numeric: tabular-nums;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.6);
+    }
+
+    .thumb .tag.live {
+      left: 4px;
+      right: auto;
+      top: 4px;
+      bottom: auto;
+      font-weight: 600;
+      background: var(--pink);
+    }
+
+    .card .text {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding-top: 1px;
+    }
+
+    .card .name {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .card[aria-current="true"] .name {
+      font-weight: 600;
+      color: var(--pink);
+    }
+
+    .card .by {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 11px;
+      color: var(--secondary);
+    }
+
+    /* 加载中的占位卡片 */
+    .skeleton .thumb,
+    .skeleton .bar {
+      background: var(--fill-hover);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .skeleton .bar {
+      height: 10px;
+      border-radius: 3px;
+    }
+
+    @keyframes pulse {
+      50% {
+        opacity: 0.45;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .skeleton .thumb,
+      .skeleton .bar {
+        animation: none;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * {
+        transition-property: background-color, color, opacity !important;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="tabs">
+    <div class="segmented" id="tabs" role="tablist">
+      <button class="segment" role="tab" data-tab="now" aria-checked="true">正在播放</button>
+      <button class="segment" role="tab" data-tab="browse" aria-checked="false">浏览</button>
+    </div>
+  </div>
+
+  <div id="browse" hidden>
+    <div class="chips" id="chips" role="radiogroup" aria-label="分类"></div>
+    <form class="search" id="search-form">
+      <input id="keyword" type="search" placeholder="搜索" autocomplete="off" />
+      <div class="segmented" id="search-kind" role="radiogroup" aria-label="搜索类型"></div>
+    </form>
+    <div class="list-head">
+      <div class="section-title" id="list-title"></div>
+      <button class="link" id="refresh">刷新</button>
+    </div>
+    <div id="list-empty" class="empty" hidden>
+      <div class="headline" id="list-headline"></div>
+      <div id="list-detail"></div>
+    </div>
+    <div class="cards" id="cards"></div>
+  </div>
+
+  <div id="now">
+  <div id="empty" class="empty">
+    <div class="headline" id="empty-headline">当前没有在播放 B 站内容</div>
+    <div id="empty-detail">按 <kbd>⌘⇧O</kbd> 打开 B 站链接，或在“浏览”里挑选</div>
+  </div>
+
+  <div id="content" hidden>
+    <div class="header">
+      <span class="badge" id="badge"></span>
+      <h1 class="title" id="title"></h1>
+      <div class="author" id="author"></div>
+    </div>
+
+    <div class="section" id="video-section">
+      <div class="section-title">清晰度</div>
+      <div class="group" id="video" role="radiogroup" aria-label="清晰度"></div>
+    </div>
+
+    <div class="section" id="live-section">
+      <div class="section-title">直播清晰度</div>
+      <div class="group" id="live" role="radiogroup" aria-label="直播清晰度"></div>
+    </div>
+
+    <div class="section" id="audio-section">
+      <div class="section-title">音质</div>
+      <div class="group" id="audio" role="radiogroup" aria-label="音质"></div>
+    </div>
+
+    <div class="section" id="codec-section">
+      <div class="section-title">视频编码偏好</div>
+      <div class="segmented" id="codec" role="radiogroup" aria-label="视频编码偏好"></div>
+    </div>
+
+    <div class="section" id="danmaku-section">
+      <button class="toggle-row" id="danmaku" role="switch" aria-checked="false">
+        <span class="name">显示弹幕</span>
+        <span class="hint" id="danmaku-hint">⌘D</span>
+        <span class="switch" aria-hidden="true"></span>
+      </button>
+    </div>
+
+    <div class="section actions">
+      <button class="button" data-action="reload">刷新播放地址</button>
+      <button class="button" data-action="open">在浏览器中打开</button>
+    </div>
+  </div>
+  </div>
+
+  <div class="footer">
+    <span class="login" id="login">登录状态：检查中…</span>
+    <button class="link" data-action="login">重新读取</button>
+  </div>
+
+  <script>
+    "use strict";
+
+    const CODECS = [["hevc", "HEVC"], ["avc", "AVC"], ["av1", "AV1"]];
+    // 与 src/browse.js 的 CATEGORIES 对应
+    const CATEGORIES = [
+      ["recommend", "推荐"], ["following", "关注直播"], ["dynamic", "动态"],
+      ["popular", "热门"], ["watchlater", "稍后再看"], ["history", "历史"],
+    ];
+    const SEARCH_KINDS = [["search", "视频"], ["searchLive", "直播"]];
+    const TITLES = Object.fromEntries(CATEGORIES.concat([["search", "搜索视频"], ["searchLive", "搜索直播"]]));
+    const $ = (id) => document.getElementById(id);
+
+    // 页面本身的状态：当前标签页、当前分类、正在播放的链接与最近一次收到的列表
+    const ui = { tab: "", kind: "", searchKind: "search", playing: "", list: null };
+
+    function send(msg) {
+      window.iina.postMessage("action", msg);
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    // 单选列表：标题都用 textContent 写入，避免把视频标题当作 HTML
+    function options(container, list, isChecked, onPick) {
+      container.replaceChildren(...list.map((item, i) => {
+        const row = el("button", "option");
+        row.setAttribute("role", "radio");
+        row.setAttribute("aria-checked", String(isChecked(item, i)));
+        row.append(el("span", "name", item.name));
+        if (item.meta) row.append(el("span", "meta", item.meta));
+        row.append(el("span", "check", "✓"));
+        row.addEventListener("click", () => onPick(item, i));
+        return row;
+      }));
+    }
+
+    function segments(container, list, current, onPick) {
+      container.replaceChildren(...list.map(([key, label]) => {
+        const seg = el("button", "segment", label);
+        seg.type = "button";
+        seg.setAttribute("role", "radio");
+        seg.setAttribute("aria-checked", String(current === key));
+        seg.addEventListener("click", () => onPick(key));
+        return seg;
+      }));
+    }
+
+    // ---------------- 浏览
+
+    function remember(key, value) {
+      try {
+        localStorage.setItem("bilibili." + key, value);
+      } catch (e) {
+        // 本地页面可能不允许使用 localStorage，不记住也无妨
+      }
+    }
+
+    function recall(key) {
+      try {
+        return localStorage.getItem("bilibili." + key) || "";
+      } catch (e) {
+        return "";
+      }
+    }
+
+    function browse(kind, refresh) {
+      const keyword = $("keyword").value.trim();
+      if (kind.startsWith("search") && !keyword) {
+        $("keyword").focus();
+        return;
+      }
+      ui.kind = kind;
+      if (!kind.startsWith("search")) remember("kind", kind);
+      renderChips();
+      send({ type: "browse", kind, keyword, refresh: !!refresh });
+    }
+
+    function renderChips() {
+      $("chips").replaceChildren(...CATEGORIES.map(([key, label]) => {
+        const chip = el("button", "chip", label);
+        chip.setAttribute("role", "radio");
+        chip.setAttribute("aria-checked", String(ui.kind === key));
+        chip.addEventListener("click", () => browse(key, ui.kind === key));
+        return chip;
+      }));
+      segments($("search-kind"), SEARCH_KINDS, ui.searchKind, (key) => {
+        ui.searchKind = key;
+        renderChips();
+        if ($("keyword").value.trim()) browse(key);
+      });
+    }
+
+    function duration(sec) {
+      if (!sec) return "";
+      const pad = (n) => String(n).padStart(2, "0");
+      const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = Math.floor(sec % 60);
+      return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+    }
+
+    // B 站图床支持在地址后加尺寸参数取缩略图；带外站 Referer 会被拒绝，所以不发送 Referer
+    function thumbnail(item) {
+      const box = el("div", "thumb");
+      if (item.cover) {
+        const img = document.createElement("img");
+        img.src = /\.hdslb\.com\//.test(item.cover) && !item.cover.includes("@") ? item.cover + "@224w_126h_1c.webp" : item.cover;
+        img.alt = "";
+        img.loading = "lazy";
+        img.decoding = "async";
+        img.referrerPolicy = "no-referrer";
+        img.addEventListener("error", () => img.remove());
+        box.append(img);
+      }
+      if (item.live) box.append(el("span", "tag live", "直播"));
+      else if (item.duration) box.append(el("span", "tag", duration(item.duration)));
+      return box;
+    }
+
+    function card(item, i) {
+      const row = el("button", "card");
+      row.title = item.title;
+      row.dataset.url = item.url;
+      row.setAttribute("aria-current", String(item.url === ui.playing));
+      const text = el("div", "text");
+      text.append(el("div", "name", item.title));
+      if (item.author) text.append(el("div", "by", item.author));
+      row.append(thumbnail(item), text);
+      row.addEventListener("click", () => send({ type: "play", index: i, url: item.url }));
+      return row;
+    }
+
+    function skeleton() {
+      const row = el("div", "card skeleton");
+      const text = el("div", "text");
+      const a = el("div", "bar"), b = el("div", "bar");
+      b.style.width = "45%";
+      text.append(a, b);
+      row.append(el("div", "thumb"), text);
+      return row;
+    }
+
+    function listMessage(headline, detail, isError) {
+      $("list-empty").hidden = false;
+      $("list-empty").classList.toggle("error", !!isError);
+      $("list-headline").textContent = headline;
+      $("list-detail").textContent = detail || "";
+    }
+
+    function renderList(view) {
+      ui.list = view;
+      // 插件那边可能比页面先选好分类（例如页面重新加载后补发的列表）
+      if (view.kind && view.kind !== ui.kind) {
+        ui.kind = view.kind;
+        if (view.kind.startsWith("search")) {
+          ui.searchKind = view.kind;
+          $("keyword").value = view.keyword || "";
+        }
+        renderChips();
+      }
+      const title = TITLES[view.kind] || "";
+      $("list-title").textContent = view.kind.startsWith("search") && view.keyword ? `${title}：${view.keyword}` : title;
+      $("list-empty").hidden = true;
+      if (view.loading) {
+        $("cards").replaceChildren(...Array.from({ length: 6 }, skeleton));
+        return;
+      }
+      if (view.error) {
+        $("cards").replaceChildren();
+        listMessage("获取失败", view.error, true);
+        return;
+      }
+      if (!view.items.length) {
+        $("cards").replaceChildren();
+        listMessage(view.kind === "following" ? "关注的主播都没有在直播" : "这里还没有内容");
+        return;
+      }
+      $("cards").replaceChildren(...view.items.map(card));
+    }
+
+    function markPlaying(url) {
+      ui.playing = url || "";
+      for (const row of $("cards").children) {
+        if (row.dataset.url) row.setAttribute("aria-current", String(row.dataset.url === ui.playing));
+      }
+    }
+
+    function showTab(tab) {
+      ui.tab = tab;
+      for (const seg of $("tabs").children) seg.setAttribute("aria-checked", String(seg.dataset.tab === tab));
+      $("now").hidden = tab !== "now";
+      $("browse").hidden = tab !== "browse";
+      remember("tab", tab);
+      if (tab === "browse" && !ui.kind) browse(recall("kind") || "recommend");
+    }
+
+    // ---------------- 正在播放
+
+    function render(state) {
+      markPlaying(state.item && state.item.url);
+      // 第一次收到状态时决定默认标签页：没有在播放就直接去浏览
+      if (!ui.tab) showTab(state.item || state.loading ? "now" : recall("tab") || "browse");
+      $("login").textContent = "登录状态：" + (state.login || "未知");
+      const item = state.item;
+      $("content").hidden = !item;
+      $("empty").hidden = !!item;
+      if (!item) {
+        const empty = $("empty");
+        empty.classList.toggle("error", !!state.error && !state.loading);
+        if (state.loading) {
+          $("empty-headline").textContent = "正在解析 B 站链接…";
+          $("empty-detail").textContent = "";
+        } else if (state.error) {
+          $("empty-headline").textContent = "B 站链接解析失败";
+          $("empty-detail").textContent = state.error;
+        } else {
+          $("empty-headline").textContent = "当前没有在播放 B 站内容";
+          $("empty-detail").replaceChildren("按 ", el("kbd", "", "⌘⇧O"), " 打开 B 站链接，或在“浏览”里挑选");
+        }
+        return;
+      }
+
+      const live = item.type === "live";
+      const badge = $("badge");
+      badge.textContent = live ? "直播" : "视频";
+      badge.classList.toggle("live", live);
+      // 直播标题自带“【直播】”前缀，徽标已经说明了类型
+      $("title").textContent = live ? item.title.replace(/^【直播】/, "") : item.title;
+      $("author").textContent = item.author ? (live ? "主播：" : "UP 主：") + item.author : "";
+      $("author").hidden = !item.author;
+
+      $("live-section").hidden = !live;
+      $("video-section").hidden = live || !item.video.length;
+      $("audio-section").hidden = live || item.audio.length <= 1;
+      $("codec-section").hidden = live;
+      $("danmaku-section").hidden = live;
+
+      if (live) {
+        options($("live"), item.qualities, (q) => q.qn === item.qn, (q) => send({ type: "live", qn: q.qn }));
+        return;
+      }
+
+      const video = item.video.map((v) => ({ name: v.name, meta: v.fps && v.fps > 30 ? v.fps + " 帧" : "" }));
+      options($("video"), video, (v, i) => i === item.videoIndex, (v, i) => send({ type: "video", index: i }));
+      options($("audio"), item.audio, (a, i) => i === item.audioIndex, (a, i) => send({ type: "audio", index: i }));
+
+      segments($("codec"), CODECS, state.codec, (key) => send({ type: "codec", name: key }));
+
+      const dm = $("danmaku");
+      dm.disabled = !item.hasDanmaku;
+      dm.setAttribute("aria-checked", String(!!item.danmaku));
+      $("danmaku-hint").textContent = item.hasDanmaku ? "⌘D" : "没有弹幕";
+    }
+
+    for (const seg of $("tabs").children) seg.addEventListener("click", () => showTab(seg.dataset.tab));
+    $("refresh").addEventListener("click", () => ui.kind && browse(ui.kind, true));
+    $("search-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      browse(ui.searchKind);
+    });
+    renderChips();
+
+    $("danmaku").addEventListener("click", () => send({ type: "danmaku" }));
+    for (const button of document.querySelectorAll("[data-action]")) {
+      button.addEventListener("click", () => send({ type: button.dataset.action }));
+    }
+
+    // 状态以 encodeURIComponent 后的 JSON 字符串传入，见 src/sidebar.js
+    window.iina.onMessage("state", (data) => {
+      try {
+        render(JSON.parse(decodeURIComponent(data)));
+      } catch (e) {
+        console.error(e);
+      }
+    });
+    window.iina.onMessage("list", (data) => {
+      try {
+        renderList(JSON.parse(decodeURIComponent(data)));
+      } catch (e) {
+        console.error(e);
+      }
+    });
+    window.iina.postMessage("ready", 1);
+  </script>
+</body>
+
+</html>

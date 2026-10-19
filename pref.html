@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Bilibili</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      padding: 16px;
+      margin: 0;
+      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    }
+
+    h3 {
+      font-size: 13px;
+      margin: 18px 0 6px;
+    }
+
+    h3:first-child {
+      margin-top: 0;
+    }
+
+    .pref-section {
+      margin-bottom: 10px;
+    }
+
+    .help {
+      font-size: 11px;
+      color: rgba(0, 0, 0, 0.5);
+      margin: 2px 0 0;
+    }
+
+    .options {
+      line-height: 22px;
+    }
+
+    .options label {
+      margin-right: 12px;
+      white-space: nowrap;
+    }
+
+    input[type="number"] {
+      width: 5em;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body {
+        color: #ddd;
+      }
+
+      .help {
+        color: rgba(255, 255, 255, 0.5);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <h3>登录</h3>
+  <div class="pref-section options">
+    <label><input type="radio" name="cookie_source" value="firefox" data-pref-key /> 读取 Firefox 的登录状态</label>
+    <label><input type="radio" name="cookie_source" value="manual" data-pref-key /> 手动填写 Cookie</label>
+    <label><input type="radio" name="cookie_source" value="none" data-pref-key /> 不登录</label>
+    <p class="help">
+      登录后可以看 4K、1080P 高码率、大会员番剧，并使用稍后再看、历史、动态等列表。
+      选择 Firefox 时自动读取 Firefox 里已登录的 bilibili.com 账号，无需复制 Cookie。
+      修改后在菜单“插件 &gt; Bilibili &gt; 重新读取登录信息”中生效。
+    </p>
+  </div>
+  <div class="pref-section">
+    Cookie（仅“手动填写”时使用）：
+    <input type="text" data-pref-key="cookie" style="width: 100%; margin-top: 4px" placeholder="SESSDATA=…; DedeUserID=…; bili_jct=…" />
+    <p class="help">在浏览器开发者工具“网络”面板里，复制任意 api.bilibili.com 请求的 Cookie 请求头。Cookie 等同于账号凭据，不要分享给别人。</p>
+  </div>
+
+  <h3>视频</h3>
+  <div class="pref-section">
+    默认清晰度上限：
+    <div class="options">
+      <label><input type="radio" name="max_quality" value="127" data-pref-key /> 最高</label>
+      <label><input type="radio" name="max_quality" value="120" data-pref-key /> 4K</label>
+      <label><input type="radio" name="max_quality" value="116" data-pref-key /> 1080P60</label>
+      <label><input type="radio" name="max_quality" value="112" data-pref-key /> 1080P+</label>
+      <label><input type="radio" name="max_quality" value="80" data-pref-key /> 1080P</label>
+      <label><input type="radio" name="max_quality" value="64" data-pref-key /> 720P</label>
+      <label><input type="radio" name="max_quality" value="32" data-pref-key /> 480P</label>
+    </div>
+    <p class="help">所有清晰度都会出现在“视频 &gt; 视频轨道”菜单里，可随时切换，只有正在看的那一档消耗流量。在菜单里选的清晰度会自动记为新的默认值。</p>
+  </div>
+  <div class="pref-section">
+    视频编码偏好：
+    <div class="options">
+      <label><input type="radio" name="video_codec" value="hevc" data-pref-key /> HEVC（体积小，推荐）</label>
+      <label><input type="radio" name="video_codec" value="avc" data-pref-key /> AVC（兼容性最好）</label>
+      <label><input type="radio" name="video_codec" value="av1" data-pref-key /> AV1（需要 M3 及以上芯片硬解）</label>
+    </div>
+  </div>
+  <div class="pref-section">
+    <label><input type="checkbox" data-pref-key="hires_audio" /> 默认使用 Hi-Res 无损 / 杜比全景声音轨（如果有）</label>
+  </div>
+  <div class="pref-section">
+    <label><input type="checkbox" data-pref-key="subtitle_enable" /> 加载 CC 字幕</label>
+  </div>
+
+  <h3>直播</h3>
+  <div class="pref-section">
+    默认清晰度：
+    <div class="options">
+      <label><input type="radio" name="live_quality" value="10000" data-pref-key /> 原画</label>
+      <label><input type="radio" name="live_quality" value="400" data-pref-key /> 蓝光</label>
+      <label><input type="radio" name="live_quality" value="250" data-pref-key /> 超清</label>
+      <label><input type="radio" name="live_quality" value="150" data-pref-key /> 高清</label>
+    </div>
+    <p class="help">未登录时直播服务器只提供固定的一两档清晰度。</p>
+  </div>
+  <div class="pref-section">
+    优先格式：
+    <div class="options">
+      <label><input type="radio" name="live_format" value="flv" data-pref-key /> FLV（延迟低）</label>
+      <label><input type="radio" name="live_format" value="ts" data-pref-key /> HLS (TS)</label>
+      <label><input type="radio" name="live_format" value="fmp4" data-pref-key /> HLS (fMP4)</label>
+    </div>
+  </div>
+  <div class="pref-section">
+    优先编码：
+    <div class="options">
+      <label><input type="radio" name="live_codec" value="avc" data-pref-key /> AVC</label>
+      <label><input type="radio" name="live_codec" value="hevc" data-pref-key /> HEVC</label>
+    </div>
+  </div>
+
+  <h3>弹幕</h3>
+  <div class="pref-section">
+    <label><input type="checkbox" data-pref-key="danmaku_enable" /> 加载弹幕</label>
+    <br />
+    <label><input type="checkbox" data-pref-key="danmaku_show" /> 默认显示弹幕</label>
+    <p class="help">弹幕是名为“弹幕”的字幕轨，可以在“字幕”菜单或“插件 &gt; Bilibili &gt; 显示弹幕”（⌘D）里开关，开关状态会被记住。</p>
+  </div>
+  <div class="pref-section">
+    字体：<input type="text" data-pref-key="danmaku_font" placeholder="PingFang SC" style="width: 12em" />
+    字号：<input type="number" data-pref-key="danmaku_font_size" data-type="int" min="10" max="200" />
+    <label><input type="checkbox" data-pref-key="danmaku_bold" /> 粗体</label>
+  </div>
+  <div class="pref-section">
+    不透明度：<input type="number" data-pref-key="danmaku_opacity" data-type="float" min="0" max="1" step="0.1" />
+    显示区域：<input type="number" data-pref-key="danmaku_display_area" data-type="float" min="0.1" max="1" step="0.1" />
+    <p class="help">字号以 1080P 画面为基准；显示区域为占画面高度的比例，1 为全屏。</p>
+  </div>
+  <div class="pref-section">
+    滚动弹幕停留（秒）：<input type="number" data-pref-key="danmaku_scroll_time" data-type="float" min="1" step="1" />
+    顶部/底部弹幕停留（秒）：<input type="number" data-pref-key="danmaku_fixed_time" data-type="float" min="1" step="1" />
+  </div>
+
+  <h3>其他</h3>
+  <div class="pref-section">
+    列表最多展开：<input type="number" data-pref-key="max_items" data-type="int" min="1" max="1000" /> 条
+    <p class="help">用于 UP 主投稿、收藏夹、搜索、排行榜等列表页。</p>
+  </div>
+  <div class="pref-section">
+    <label><input type="checkbox" data-pref-key="debug" /> 输出调试日志（在 IINA 菜单“窗口 &gt; 日志”中查看）</label>
+  </div>
+</body>
+
+</html>
