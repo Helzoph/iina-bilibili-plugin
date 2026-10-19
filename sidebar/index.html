@@ -257,6 +257,76 @@
       opacity: 0.5;
     }
 
+    /* 弹幕样式：一行一项，标签 | 控件 | 当前值 */
+    .style-head {
+      display: flex;
+      align-items: center;
+      margin: 10px 2px 6px;
+    }
+
+    .style-head .section-title {
+      flex: 1;
+      margin: 0;
+    }
+
+    .style-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 32px;
+      padding: 4px 10px;
+    }
+
+    .style-row + .style-row {
+      box-shadow: inset 0 1px 0 var(--separator);
+    }
+
+    .style-row label {
+      flex: none;
+      width: 52px;
+    }
+
+    .style-row input[type="range"] {
+      flex: 1;
+      min-width: 0;
+      margin: 0;
+      accent-color: var(--pink);
+    }
+
+    .style-row .value {
+      flex: none;
+      width: 38px;
+      text-align: right;
+      color: var(--secondary);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .style-row input[type="text"] {
+      flex: 1;
+      min-width: 0;
+      padding: 3px 7px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--fill-hover);
+      font: inherit;
+      font-size: 12px;
+      color: inherit;
+      outline: none;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+
+    .style-row input[type="text"]:focus {
+      box-shadow: 0 0 0 2px #0a84ff;
+      box-shadow: 0 0 0 2px -apple-system-control-accent;
+    }
+
+    .style-row .toggle-row {
+      padding: 0;
+      background: none;
+    }
+
     /* 操作按钮 */
     .actions {
       display: grid;
@@ -622,6 +692,51 @@
         <span class="hint" id="danmaku-hint">⌘D</span>
         <span class="switch" aria-hidden="true"></span>
       </button>
+
+      <div class="style-head">
+        <div class="section-title">弹幕样式</div>
+        <button class="link" id="danmaku-reset">恢复默认</button>
+      </div>
+      <div class="group" id="danmaku-style">
+        <div class="style-row">
+          <label for="dm-font">字体</label>
+          <input id="dm-font" type="text" list="dm-fonts" placeholder="PingFang SC" autocomplete="off" spellcheck="false" />
+          <datalist id="dm-fonts">
+            <option value="PingFang SC"></option>
+            <option value="Hiragino Sans GB"></option>
+            <option value="Heiti SC"></option>
+            <option value="Songti SC"></option>
+            <option value="Kaiti SC"></option>
+            <option value="Helvetica Neue"></option>
+          </datalist>
+        </div>
+        <div class="style-row">
+          <label for="dm-fontSize">字号</label>
+          <input id="dm-fontSize" type="range" min="20" max="100" step="2" data-style="fontSize" />
+          <span class="value" id="dm-fontSize-value"></span>
+        </div>
+        <div class="style-row">
+          <label for="dm-opacity">不透明度</label>
+          <input id="dm-opacity" type="range" min="10" max="100" step="5" data-style="opacity" data-scale="100" />
+          <span class="value" id="dm-opacity-value"></span>
+        </div>
+        <div class="style-row">
+          <label for="dm-displayArea">显示区域</label>
+          <input id="dm-displayArea" type="range" min="10" max="100" step="5" data-style="displayArea" data-scale="100" />
+          <span class="value" id="dm-displayArea-value"></span>
+        </div>
+        <div class="style-row">
+          <label for="dm-scrollTime">滚动时长</label>
+          <input id="dm-scrollTime" type="range" min="3" max="20" step="1" data-style="scrollTime" />
+          <span class="value" id="dm-scrollTime-value"></span>
+        </div>
+        <div class="style-row">
+          <button class="toggle-row" id="dm-bold" role="switch" aria-checked="false">
+            <span class="name">粗体</span>
+            <span class="switch" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="section actions">
@@ -648,6 +763,13 @@
     const SEARCH_KINDS = [["search", "视频"], ["searchLive", "直播"]];
     const TITLES = Object.fromEntries(CATEGORIES.concat([["search", "搜索视频"], ["searchLive", "搜索直播"]]));
     const $ = (id) => document.getElementById(id);
+    // 弹幕样式滑块的显示文字；字号以 1080P 画面为基准，显示区域为占画面高度的比例
+    const STYLE_LABELS = {
+      fontSize: (v) => String(v),
+      opacity: (v) => Math.round(v * 100) + "%",
+      displayArea: (v) => (v >= 1 ? "全屏" : Math.round(v * 100) + "%"),
+      scrollTime: (v) => v + " 秒",
+    };
 
     // 页面本身的状态：当前标签页、当前分类、正在播放的链接与最近一次收到的列表
     const ui = { tab: "", kind: "", searchKind: "search", playing: "", list: null };
@@ -835,6 +957,48 @@
       if (tab === "browse" && !ui.kind) browse(recall("kind") || "recommend");
     }
 
+    // ---------------- 弹幕样式
+
+    function sendStyle(key, value) {
+      send({ type: "danmakuStyle", key, value });
+    }
+
+    function sliders() {
+      return document.querySelectorAll("#danmaku-style [data-style]");
+    }
+
+    function sliderValue(input) {
+      return Number(input.value) / (Number(input.dataset.scale) || 1);
+    }
+
+    function renderStyle(style) {
+      if (!style) return;
+      // 正在编辑的控件不跟着状态刷新，否则拖动或输入时会跳回旧值
+      for (const input of sliders()) {
+        const key = input.dataset.style;
+        const value = style[key];
+        if (document.activeElement !== input) input.value = String(Math.round(value * (Number(input.dataset.scale) || 1)));
+        $(input.id + "-value").textContent = STYLE_LABELS[key](value);
+      }
+      if (document.activeElement !== $("dm-font")) $("dm-font").value = style.font || "";
+      $("dm-bold").setAttribute("aria-checked", String(!!style.bold));
+    }
+
+    for (const input of sliders()) {
+      const key = input.dataset.style;
+      // 拖动时只更新数字，松手后再让插件重新生成弹幕
+      input.addEventListener("input", () => {
+        $(input.id + "-value").textContent = STYLE_LABELS[key](sliderValue(input));
+      });
+      input.addEventListener("change", () => sendStyle(key, sliderValue(input)));
+    }
+    $("dm-font").addEventListener("change", () => sendStyle("font", $("dm-font").value.trim()));
+    $("dm-font").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") $("dm-font").blur();
+    });
+    $("dm-bold").addEventListener("click", () => sendStyle("bold", $("dm-bold").getAttribute("aria-checked") !== "true"));
+    $("danmaku-reset").addEventListener("click", () => send({ type: "danmakuStyle", reset: true }));
+
     // ---------------- 正在播放
 
     function render(state) {
@@ -891,6 +1055,7 @@
       dm.disabled = !item.hasDanmaku;
       dm.setAttribute("aria-checked", String(!!item.danmaku));
       $("danmaku-hint").textContent = item.hasDanmaku ? "⌘D" : "没有弹幕";
+      renderStyle(state.danmakuStyle);
     }
 
     for (const seg of $("tabs").children) seg.addEventListener("click", () => showTab(seg.dataset.tab));

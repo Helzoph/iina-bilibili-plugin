@@ -134,6 +134,11 @@ test("config 把首选编码排在最前，并限制数值范围", () => {
   assert.equal(cfg.maxItems, 1);
 });
 
+test("config 去掉弹幕字体名里会破坏 ASS 样式行的逗号与换行", () => {
+  const bili = c.createBili(mockEnv({ danmaku_font: " Songti SC,Bold\n" }, []));
+  assert.equal(bili.config().danmaku.font, "Songti SCBold");
+});
+
 test("config 中未知的编码偏好保持默认顺序", () => {
   const bili = c.createBili(mockEnv({ video_codec: "vp9" }, []));
   assert.deepEqual(bili.config().video.codecs, ["hevc", "avc", "av1"]);

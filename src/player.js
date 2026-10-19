@@ -3,12 +3,24 @@
 // 可选的 api.onState(snapshot) 在状态变化时被调用（用于侧边栏），api.showSidebar 存在时菜单里提供“显示侧边栏”
 "use strict";
 
-const { REFERER, LIVE_REFERER, UA, str, isBilibiliUrl } = require("./common");
+const { REFERER, LIVE_REFERER, UA, DEFAULTS, str, isBilibiliUrl } = require("./common");
 const { videoEdl, playlistM3u, ccToSrt } = require("./media");
 const { toAss } = require("./danmaku");
 
 const DANMAKU_TITLE = "弹幕";
 const CODEC_NAMES = { hevc: "HEVC (H.265)", avc: "AVC (H.264)", av1: "AV1" };
+
+// 侧边栏可调的弹幕样式：键名 -> [首选项, 把网页传来的值转成首选项的值，不合法时返回 undefined]
+const range = (min, max, round) => (v) => (typeof v === "number" && Number.isFinite(v)
+  ? Math.min(max, Math.max(min, round ? Math.round(v) : v)) : undefined);
+const DANMAKU_STYLE = {
+  font: ["danmaku_font", (v) => (typeof v === "string" ? v.replace(/[,\r\n]/g, "").trim().slice(0, 100) : undefined)],
+  fontSize: ["danmaku_font_size", range(10, 200, true)],
+  opacity: ["danmaku_opacity", range(0, 1)],
+  displayArea: ["danmaku_display_area", range(0.1, 1)],
+  scrollTime: ["danmaku_scroll_time", range(1, 60)],
+  bold: ["danmaku_bold", (v) => (typeof v === "boolean" ? v : undefined)],
+};
 
 function createPlayer(api, bili, parser) {
   const { mpv, core, menu, utils, preferences } = api;
@@ -38,14 +50,17 @@ function createPlayer(api, bili, parser) {
   // ---------------------------------------------------------------- 加载
 
   async function fetchDanmaku(info) {
-    const cfg = bili.config().danmaku;
-    if (!cfg.enable || !info.cid) return null;
+    if (!bili.config().danmaku.enable || !info.cid) return null;
     const xml = await bili.httpGet(`https://comment.bilibili.com/${info.cid}.xml`, { cookie: false });
     if (!xml || !xml.includes("<i>")) {
       bili.warn("弹幕获取失败 cid=" + info.cid);
       return null;
     }
-    const { ass, count } = toAss(xml, info.width, info.height, cfg);
+    return xml;
+  }
+
+  function danmakuAss(info, xml) {
+    const { ass, count } = toAss(xml, info.width, info.height, bili.config().danmaku);
     bili.log(`弹幕 ${count} 条`);
     return ass;
   }
@@ -75,7 +90,7 @@ function createPlayer(api, bili, parser) {
   }
 
   async function loadVideo(info, carry) {
-    const [ass, subs] = await Promise.all([fetchDanmaku(info), fetchSubtitles(info)]);
+    const [xml, subs] = await Promise.all([fetchDanmaku(info), fetchSubtitles(info)]);
     if (carry.qn) {
       const i = info.video.findIndex((v) => v.qn === carry.qn);
       if (i >= 0) info.videoIndex = i;
@@ -99,13 +114,13 @@ function createPlayer(api, bili, parser) {
     const start = carry.start !== undefined ? carry.start : info.start;
     if (start) setLocal("start", String(start));
 
-    if (ass) {
+    if (xml) {
       // 弹幕也可能作为第二字幕与 CC 字幕同时显示，此时要保留 ASS 里的位置和动画
       setLocal("secondary-sub-ass-override", "no");
-      mpv.command("sub-add", ["memory://" + ass, "auto", DANMAKU_TITLE, "zh"]);
+      mpv.command("sub-add", ["memory://" + danmakuAss(info, xml), "auto", DANMAKU_TITLE, "zh"]);
     }
     for (const s of subs) mpv.command("sub-add", ["memory://" + s.srt, "auto", s.title, s.lang]);
-    info.hasDanmaku = !!ass;
+    info.hasDanmaku = !!xml;
     info.subtitleCount = subs.length;
   }
 
@@ -190,8 +205,9 @@ function createPlayer(api, bili, parser) {
     return Number.isFinite(id) && id > 0 ? id - 1 : -1;
   }
 
+  // 修改样式时新旧两条弹幕轨会短暂共存，取最后加入的那条
   function danmakuTrack() {
-    return tracks("sub").find((t) => t.external && t.title === DANMAKU_TITLE) || null;
+    return tracks("sub").filter((t) => t.external && t.title === DANMAKU_TITLE).pop() || null;
   }
 
   function subId(prop) {
@@ -217,6 +233,47 @@ function createPlayer(api, bili, parser) {
       if (subId("secondary-sid") === dm.id) mpv.set("secondary-sid", "no");
     }
     return true;
+  }
+
+  // 按当前样式重新生成弹幕并替换原来的轨道；正在显示时新轨道接替原来的位置（主字幕或第二字幕），不用重新加载视频
+  // 弹幕 XML 不常驻内存（长视频可达数百 KB），修改样式时重新下载，只有最后一次修改会生效
+  let restyleSeq = 0;
+  async function restyleDanmaku() {
+    const info = current;
+    if (!info || !info.hasDanmaku) return;
+    const seq = ++restyleSeq;
+    const xml = await fetchDanmaku(info);
+    // 下载期间换了视频或又改了样式
+    if (current !== info || seq !== restyleSeq) return;
+    const old = danmakuTrack();
+    if (!xml || !old) {
+      osd("弹幕样式已保存，重新获取弹幕失败，下次打开视频时生效");
+      return;
+    }
+    const slot = ["sid", "secondary-sid"].find((p) => subId(p) === old.id);
+    mpv.command("sub-add", ["memory://" + danmakuAss(info, xml), "auto", DANMAKU_TITLE, "zh"]);
+    const dm = danmakuTrack();
+    if (!dm || dm.id === old.id) return;
+    if (slot) mpv.set(slot, String(dm.id));
+    mpv.command("sub-remove", [String(old.id)]);
+  }
+
+  // 修改会被记住，之后打开的视频也按新样式显示
+  async function setDanmakuStyle(msg) {
+    if (msg.reset) {
+      for (const [key] of Object.values(DANMAKU_STYLE)) savePref(key, DEFAULTS[key]);
+    } else {
+      const entry = DANMAKU_STYLE[msg.key];
+      const value = entry && entry[1](msg.value);
+      if (value === undefined) {
+        bili.warn("无效的弹幕样式: " + msg.key);
+        return;
+      }
+      if (bili.pref(entry[0]) === value) return;
+      savePref(entry[0], value);
+    }
+    notify();
+    await restyleDanmaku();
   }
 
   function selectVideo(i) {
@@ -317,9 +374,16 @@ function createPlayer(api, bili, parser) {
 
   // ---------------------------------------------------------------- 侧边栏
 
+  function danmakuStyle() {
+    const cfg = bili.config().danmaku;
+    const out = {};
+    for (const key of Object.keys(DANMAKU_STYLE)) out[key] = cfg[key];
+    return out;
+  }
+
   // 侧边栏需要的全部状态，只含可 JSON 序列化的值
   function snapshot() {
-    const state = { login: loginLabel, codec: bili.pref("video_codec"), loading, error: failure, item: null };
+    const state = { login: loginLabel, codec: bili.pref("video_codec"), danmakuStyle: danmakuStyle(), loading, error: failure, item: null };
     if (!current) return state;
     const item = { type: current.type, url: current.pageUrl, title: current.title || "", author: current.author || "" };
     if (current.type === "live") {
@@ -366,6 +430,8 @@ function createPlayer(api, bili, parser) {
         return;
       case "danmaku":
         return toggleDanmaku();
+      case "danmakuStyle":
+        return setDanmakuStyle(msg);
       case "reload":
         return reload({ start: position() });
       case "open":
@@ -446,7 +512,7 @@ function createPlayer(api, bili, parser) {
   return {
     onLoad, onWindowLoaded, onFileLoaded, onTrackChanged, onEndFile, buildMenu, updateLoginLabel,
     snapshot, handleAction,
-    toggleDanmaku, selectVideo, selectAudio, selectLiveQuality, selectCodec,
+    toggleDanmaku, setDanmakuStyle, selectVideo, selectAudio, selectLiveQuality, selectCodec,
     get current() { return current; },
   };
 }

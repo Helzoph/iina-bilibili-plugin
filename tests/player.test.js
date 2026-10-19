@@ -467,7 +467,10 @@ function watch(ctx) {
 
 test("侧边栏状态在没有播放时只含登录与编码", () => {
   const ctx = setup({ video_codec: "av1" });
-  assert.deepEqual(ctx.player.snapshot(), { login: "检查中…", codec: "av1", loading: false, error: "", item: null });
+  assert.deepEqual(ctx.player.snapshot(), {
+    login: "检查中…", codec: "av1", loading: false, error: "", item: null,
+    danmakuStyle: { font: "", fontSize: 48, opacity: 0.8, displayArea: 0.8, scrollTime: 10, bold: true },
+  });
 });
 
 test("侧边栏状态列出视频的清晰度、音质、当前选择与弹幕", async () => {
@@ -585,6 +588,137 @@ test("侧边栏开关弹幕", async () => {
   assert.equal(ctx.prefs.danmaku_show, true);
   ctx.player.onTrackChanged("sub");
   assert.equal(states.at(-1).item.danmaku, true);
+});
+
+// 让模拟的 mpv 像真实 mpv 一样在 sub-add/sub-remove 时更新轨道列表，新轨道 id 递增
+function liveTracks(iina) {
+  const command = iina.mpv.command;
+  iina.mpv.command = (name, args) => {
+    command(name, args);
+    const list = iina.props["track-list"];
+    if (name === "sub-add") {
+      const id = Math.max(0, ...list.filter((t) => t.type === "sub").map((t) => t.id)) + 1;
+      list.push({ id, type: "sub", external: true, title: args[2] });
+    }
+    if (name === "sub-remove") iina.props["track-list"] = list.filter((t) => !(t.type === "sub" && t.id === Number(args[0])));
+  };
+}
+
+const danmakuAdds = (iina) => iina.commands.filter((c) => c[0] === "sub-add" && c[3] === DANMAKU_TITLE);
+
+test("侧边栏修改弹幕样式会记住设置，并用新样式替换正在显示的弹幕轨", async () => {
+  const ctx = setup({ danmaku_show: true });
+  await open(ctx, VIDEO_URL);
+  liveTracks(ctx.iina);
+  const states = watch(ctx);
+  assert.equal(ctx.iina.props.sid, "1");
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "fontSize", value: 60 });
+  assert.equal(ctx.prefs.danmaku_font_size, 60);
+  assert.match(danmakuAdds(ctx.iina).at(-1)[1], /Style: Danmaku,PingFang SC,60,/);
+  // 新轨道 id 为 3（1 是旧弹幕，2 是 CC 字幕），接替主字幕后删除旧轨道
+  assert.equal(ctx.iina.props.sid, "3");
+  assert.deepEqual(ctx.iina.commands.at(-1), ["sub-remove", "1"]);
+  assert.deepEqual(ctx.iina.props["track-list"].filter((t) => t.title === DANMAKU_TITLE).map((t) => t.id), [3]);
+  assert.equal(states.at(-1).danmakuStyle.fontSize, 60);
+  assert.equal(states.at(-1).item.danmaku, true);
+  // 弹幕 XML 不常驻内存，修改样式时重新下载
+  assert.ok(!JSON.stringify(ctx.player.current).includes("<d p="));
+  assert.equal(ctx.env.requests.filter((r) => /comment\.bilibili\.com/.test(r.url)).length, 2);
+});
+
+test("修改样式时重新下载弹幕失败，保留原来的弹幕轨并提示", async () => {
+  let fail = false;
+  const routes = [[/comment\.bilibili\.com/, () => (fail ? null : F.DANMAKU_XML)]].concat(VIDEO_ROUTES);
+  const ctx = setup({ danmaku_show: true }, routes);
+  await open(ctx, VIDEO_URL);
+  liveTracks(ctx.iina);
+  fail = true;
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "fontSize", value: 60 });
+  assert.equal(ctx.prefs.danmaku_font_size, 60);
+  assert.equal(danmakuAdds(ctx.iina).length, 1);
+  assert.equal(ctx.iina.props.sid, "1");
+  assert.match(ctx.iina.osds.at(-1), /重新获取弹幕失败/);
+});
+
+test("连续修改样式时只按最后一次替换弹幕轨，下载期间换了视频则不替换", async () => {
+  const ctx = setup({ danmaku_show: true });
+  await open(ctx, VIDEO_URL);
+  liveTracks(ctx.iina);
+  await Promise.all([
+    ctx.player.handleAction({ type: "danmakuStyle", key: "fontSize", value: 60 }),
+    ctx.player.handleAction({ type: "danmakuStyle", key: "fontSize", value: 70 }),
+  ]);
+  assert.equal(danmakuAdds(ctx.iina).length, 2);
+  assert.match(danmakuAdds(ctx.iina).at(-1)[1], /Style: Danmaku,PingFang SC,70,/);
+  assert.equal(ctx.iina.props.sid, "3");
+
+  const pending = ctx.player.handleAction({ type: "danmakuStyle", key: "fontSize", value: 80 });
+  ctx.iina.props["stream-open-filename"] = "/tmp/other.mp4";
+  await ctx.player.onLoad();
+  await pending;
+  assert.equal(danmakuAdds(ctx.iina).length, 2);
+});
+
+test("弹幕作为第二字幕显示时替换后仍是第二字幕，关闭时替换后仍关闭", async () => {
+  const ctx = setup({ danmaku_show: false });
+  await open(ctx, VIDEO_URL);
+  liveTracks(ctx.iina);
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "opacity", value: 0.5 });
+  assert.equal(ctx.iina.props.sid, "no");
+  assert.equal(ctx.iina.props["secondary-sid"], "no");
+  assert.match(danmakuAdds(ctx.iina).at(-1)[1], /&H80FFFFFF/);
+  ctx.iina.props.sid = "2";
+  ctx.player.toggleDanmaku();
+  assert.equal(ctx.iina.props["secondary-sid"], "3");
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "bold", value: false });
+  assert.equal(ctx.iina.props.sid, "2");
+  assert.equal(ctx.iina.props["secondary-sid"], "4");
+  assert.equal(ctx.prefs.danmaku_bold, false);
+});
+
+test("侧边栏的弹幕样式值会被校验、限制范围，值未变时不重新生成", async () => {
+  const ctx = setup();
+  await open(ctx, VIDEO_URL);
+  liveTracks(ctx.iina);
+  const before = danmakuAdds(ctx.iina).length;
+  for (const [key, value] of [["fontSize", "60"], ["bold", 1], ["font", 3], ["nope", 1], ["displayArea", NaN]]) {
+    await ctx.player.handleAction({ type: "danmakuStyle", key, value });
+  }
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "fontSize", value: 48 });
+  assert.equal(danmakuAdds(ctx.iina).length, before);
+  assert.equal(ctx.env.logs.filter((l) => l[0] === "warn" && l[1].includes("无效的弹幕样式")).length, 5);
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "fontSize", value: 999.4 });
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "displayArea", value: 0 });
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "font", value: " Songti SC,Bold " });
+  assert.equal(ctx.prefs.danmaku_font_size, 200);
+  assert.equal(ctx.prefs.danmaku_display_area, 0.1);
+  assert.equal(ctx.prefs.danmaku_font, "Songti SCBold");
+  assert.match(danmakuAdds(ctx.iina).at(-1)[1], /Style: Danmaku,Songti SCBold,200,/);
+});
+
+test("恢复默认弹幕样式", async () => {
+  const ctx = setup({ danmaku_font: "Kaiti SC", danmaku_font_size: 70, danmaku_bold: false, danmaku_fixed_time: 8 });
+  await open(ctx, VIDEO_URL);
+  liveTracks(ctx.iina);
+  await ctx.player.handleAction({ type: "danmakuStyle", reset: true });
+  assert.deepEqual(ctx.player.snapshot().danmakuStyle,
+    { font: "", fontSize: 48, opacity: 0.8, displayArea: 0.8, scrollTime: 10, bold: true });
+  // 侧边栏里没有的设置不受影响
+  assert.equal(ctx.prefs.danmaku_fixed_time, 8);
+  assert.match(danmakuAdds(ctx.iina).at(-1)[1], /Style: Danmaku,PingFang SC,48,/);
+});
+
+test("没有弹幕或没有播放时修改弹幕样式只保存设置", async () => {
+  const ctx = setup({ danmaku_enable: false });
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "scrollTime", value: 6 });
+  assert.equal(ctx.prefs.danmaku_scroll_time, 6);
+  await open(ctx, VIDEO_URL);
+  liveTracks(ctx.iina);
+  const states = watch(ctx);
+  await ctx.player.handleAction({ type: "danmakuStyle", key: "scrollTime", value: 8 });
+  assert.equal(ctx.prefs.danmaku_scroll_time, 8);
+  assert.equal(states.at(-1).danmakuStyle.scrollTime, 8);
+  assert.equal(danmakuAdds(ctx.iina).length, 0);
 });
 
 test("侧边栏切换直播清晰度", async () => {

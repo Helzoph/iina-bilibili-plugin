@@ -170,7 +170,8 @@ function createBili(env) {
       danmaku: {
         enable: !!pref("danmaku_enable"),
         show: !!pref("danmaku_show"),
-        font: str(pref("danmaku_font")),
+        // 字体名写进 ASS 的 Style 行，逗号会把后面的字段错位
+        font: str(pref("danmaku_font")).replace(/[,\r\n]/g, "").trim(),
         fontSize: num("danmaku_font_size"),
         opacity: Math.min(1, Math.max(0, num("danmaku_opacity"))),
         displayArea: Math.min(1, Math.max(0.1, num("danmaku_display_area"))),
