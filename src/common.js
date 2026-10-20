@@ -10,6 +10,8 @@ const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
 const REFERER = "https://www.bilibili.com/";
 const LIVE_REFERER = "https://live.bilibili.com/";
 const CURL = "/usr/bin/curl";
+// 预热时读取的字节数：够 mpv 解析文件头和起播的头几秒
+const WARM_BYTES = 1024 * 1024;
 
 // 与 Info.json 的 preferenceDefaults 保持一致，测试环境没有 IINA 提供的默认值时使用
 const DEFAULTS = {
@@ -33,6 +35,7 @@ const DEFAULTS = {
   subtitle_enable: true,
   autoplay_next: true,
   sync_progress: true,
+  preload_next: true,
   max_items: 100,
   debug: false,
 };
@@ -184,6 +187,7 @@ function createBili(env) {
       subtitle: { enable: !!pref("subtitle_enable") },
       autoNext: !!pref("autoplay_next"),
       syncProgress: !!pref("sync_progress"),
+      preloadNext: !!pref("preload_next"),
       maxItems: Math.max(1, num("max_items")),
     };
   }
@@ -253,6 +257,14 @@ function createBili(env) {
       "-A", UA, "-H", "Referer: " + (referer || REFERER), url]).catch(() => null);
     const code = Number(r && r.stdout) || 0;
     return code < 400;
+  }
+
+  // 读一遍媒体文件开头，让 CDN 节点提前回源缓存，之后 mpv 打开时不用等冷启动；内容直接丢弃，不落盘也不占内存
+  async function warmUp(url) {
+    log("预热 " + url);
+    const r = await env.exec(CURL, ["-s", "-o", "/dev/null", "-r", "0-" + (WARM_BYTES - 1), "--max-time", "20",
+      "-A", UA, "-H", "Referer: " + REFERER, url]).catch(() => null);
+    return !!r && r.status === 0;
   }
 
   // b23.tv 短链需要跟随跳转拿到真实地址
@@ -387,7 +399,7 @@ function createBili(env) {
 
   return {
     config, pref, log, fail, state,
-    httpGet, httpPost, httpOk, resolveRedirect, api,
+    httpGet, httpPost, httpOk, warmUp, resolveRedirect, api,
     userCookie, cookieString, uid, csrf,
     warn: (msg) => env.warn("[bilibili] " + msg),
   };

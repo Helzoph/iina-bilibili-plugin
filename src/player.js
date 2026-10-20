@@ -12,6 +12,12 @@ const DANMAKU_TITLE = "弹幕";
 const FINISHED_MARGIN = 30;
 const PROGRESS_SAMPLE_MS = 5000;
 const PROGRESS_STEP = 15;
+// 预加载：真实剩余时间（按播放速度折算）不到这么多秒时准备下一项；本文件至少播放这么多次检查间隔后才开始，免得和起播抢带宽
+const PRELOAD_LEAD = 60;
+const PRELOAD_CHECK_MS = 5000;
+const PRELOAD_WARMUP_CHECKS = 2;
+// 播放地址约两小时过期，预加载的结果放久了就不用
+const PRELOAD_TTL = 30 * 60 * 1000;
 const CODEC_NAMES = { hevc: "HEVC (H.265)", avc: "AVC (H.264)", av1: "AV1" };
 
 // 侧边栏可调的弹幕样式：键名 -> [首选项, 把网页传来的值转成首选项的值，不合法时返回 undefined]
@@ -113,9 +119,14 @@ function createPlayer(api, bili, parser) {
     return info.duration && t > info.duration - FINISHED_MARGIN ? 0 : t;
   }
 
-  async function loadVideo(info, carry) {
-    info.sync = bili.config().syncProgress && !!info.aid && !info.preview && !!(await bili.uid());
-    const playerInfo = fetchPlayerInfo(info, info.sync);
+  async function wantSync(info) {
+    return bili.config().syncProgress && !!info.aid && !info.preview && !!(await bili.uid());
+  }
+
+  // preloaded 是预加载时已经发出的 player/v2 请求
+  async function loadVideo(info, carry, preloaded) {
+    info.sync = await wantSync(info);
+    const playerInfo = preloaded || fetchPlayerInfo(info, info.sync);
     const [xml, subs, resume] = await Promise.all([
       fetchDanmaku(info), playerInfo.then(fetchSubtitles), playerInfo.then((data) => resumePosition(data, info)),
     ]);
@@ -167,6 +178,7 @@ function createPlayer(api, bili, parser) {
   async function onLoad() {
     const url = mpv.getString("stream-open-filename");
     if (!isBilibiliUrl(url)) {
+      preload = null;
       current = null;
       next = null;
       loading = false;
@@ -185,8 +197,14 @@ function createPlayer(api, bili, parser) {
     osd("正在解析 B 站链接…");
 
     let result;
+    let pre = null;
+    let preResult = null;
     try {
-      result = await parser.route(url, { liveQn: carry.liveQn });
+      // 预加载还没完成时等它，不重复请求；预加载失败的照常再解析一次
+      pre = await takePreload(carry.url ? "" : url);
+      preResult = pre && await pre.ready;
+      if (preResult) bili.log("使用预加载的解析结果");
+      result = preResult || await parser.route(url, { liveQn: carry.liveQn });
     } catch (e) {
       bili.fail("解析出错: " + (e && e.stack || e), "解析出错: " + e);
       result = null;
@@ -208,7 +226,7 @@ function createPlayer(api, bili, parser) {
       return;
     }
     if (result.type === "live") loadLive(result);
-    else await loadVideo(result, carry);
+    else await loadVideo(result, carry, preResult && pre.playerInfo);
     current = Object.assign({ pageUrl: url }, result);
     if (result.preview) osd("仅能播放试看片段，完整观看需要登录有权限的账号");
   }
@@ -362,6 +380,90 @@ function createPlayer(api, bili, parser) {
     bili.log(`已把后面的 ${items.length} 项加入播放列表`);
   }
 
+  // ---------------------------------------------------------------- 预加载
+
+  // 播放快结束时提前解析播放列表里的下一项，并让 CDN 把将要播放的那一档音视频提前缓存好，
+  // 切换时省掉接口请求和 CDN 冷启动的等待。mpv 自带的 prefetch-playlist 用不上：它预取的是网页链接，
+  // 在 on_load 里换成 EDL 后地址对不上会被丢弃；即使预先换好，它也会打开 EDL 里所有清晰度的轨道。
+  // 只保留一份结果（几十 KB 的解析结果），下一次加载时用掉或丢弃；弹幕仍在播放时再取，不在内存里多留一份
+  let preload = null;
+  let preloadWatch = null;
+
+  // 这些设置或登录状态变了，预加载时选的清晰度、编码、字幕和进度请求就不再适用
+  function preloadKey(uid) {
+    const cfg = bili.config();
+    return JSON.stringify([cfg.video, cfg.syncProgress, cfg.subtitle.enable, uid]);
+  }
+
+  function nextEntry() {
+    const pos = mpv.getNumber("playlist-pos");
+    if (!(pos >= 0) || pos + 1 >= mpv.getNumber("playlist-count")) return "";
+    return mpv.getString(`playlist/${pos + 1}/filename`);
+  }
+
+  function startPreload(url) {
+    const entry = { url, time: Date.now(), key: null, playerInfo: null };
+    preload = entry;
+    bili.log("预加载下一项 " + url);
+    entry.ready = (async () => {
+      entry.key = preloadKey(await bili.uid());
+      let result = null;
+      try {
+        result = await parser.route(url, {});
+      } catch (e) {
+        bili.warn("预加载失败: " + e);
+      }
+      if (!result || result.type !== "video") return null;
+      entry.playerInfo = fetchPlayerInfo(result, await wantSync(result)).catch(() => null);
+      const video = result.video[result.videoIndex];
+      const audio = result.audio[result.audioIndex];
+      for (const u of video ? [video.url, audio && audio.url] : [result.url]) {
+        if (u) bili.warmUp(u);
+      }
+      return result;
+    })().catch((e) => {
+      bili.warn("预加载失败: " + e);
+      return null;
+    });
+    return entry.ready;
+  }
+
+  // 取出与将要加载的链接对应、仍然有效的预加载结果；无论用不用，旧的结果都在这里丢掉
+  async function takePreload(url) {
+    const entry = preload;
+    preload = null;
+    if (!entry || entry.url !== url || Date.now() - entry.time > PRELOAD_TTL) return null;
+    await entry.ready;
+    return entry.key === preloadKey(await bili.uid()) ? entry : null;
+  }
+
+  function checkPreload(watch) {
+    if (++watch.checks < PRELOAD_WARMUP_CHECKS || !current) return undefined;
+    const url = nextEntry();
+    // 每个文件对同一个下一项只尝试一次，拖回前面再看到结尾不会重复请求
+    if (!url || url === watch.tried || !isBilibiliUrl(url) || /^https?:\/\/live\.bilibili\.com/i.test(url)) return undefined;
+    const d = mpv.getNumber("duration");
+    const duration = d > 0 ? d : current.duration;
+    const speed = mpv.getNumber("speed") > 0 ? mpv.getNumber("speed") : 1;
+    if (!(duration > 0) || (duration - position()) / speed > PRELOAD_LEAD) return undefined;
+    watch.tried = url;
+    return startPreload(url);
+  }
+
+  function startPreloadWatch() {
+    stopPreloadWatch();
+    if (!bili.config().preloadNext || current.type !== "video") return;
+    const watch = { checks: 0, tried: "" };
+    watch.timer = timers.setInterval(() => checkPreload(watch), PRELOAD_CHECK_MS);
+    preloadWatch = watch;
+  }
+
+  function stopPreloadWatch() {
+    if (!preloadWatch) return;
+    timers.clearInterval(preloadWatch.timer);
+    preloadWatch = null;
+  }
+
   // ---------------------------------------------------------------- 播放进度
 
   // 登录后把进度报给 B 站，网页端的历史记录和其他设备的断点续播都能看到。
@@ -415,6 +517,8 @@ function createPlayer(api, bili, parser) {
   function onWindowClose() {
     const sending = reportProgress(position());
     stopProgress();
+    stopPreloadWatch();
+    preload = null;
     return sending;
   }
 
@@ -592,6 +696,7 @@ function createPlayer(api, bili, parser) {
     if (current.resumed) osd("从上次看到的 " + clock(current.resumed) + " 继续播放");
     startProgress(current);
     appendFollowing();
+    startPreloadWatch();
     buildMenu();
   }
 
@@ -612,10 +717,12 @@ function createPlayer(api, bili, parser) {
     buildMenu();
   }
 
+
   function onEndFile() {
     loaded = false;
     const sending = reportProgress(0);
     stopProgress();
+    stopPreloadWatch();
     return sending;
   }
 

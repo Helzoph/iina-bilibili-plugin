@@ -40,6 +40,7 @@
     "subtitle_enable": true,
     "autoplay_next": true,
     "sync_progress": true,
+    "preload_next": true,
     "max_items": 100,
     "debug": false
   }

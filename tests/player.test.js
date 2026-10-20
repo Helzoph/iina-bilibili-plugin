@@ -801,9 +801,10 @@ const PLAIN_URL = "https://www.bilibili.com/video/BV1xx411c7mD";
 const lastPlay = (ms, cid) => ({ code: 0, data: { ...F.PLAYER_V2.data, last_play_time: ms, last_play_cid: cid || 1001 } });
 
 // 已登录的播放器；reported 记录每次上报的表单
+// 关掉预加载，计时器只剩进度上报这一个
 function syncSetup(prefs, v2, reply) {
   const reported = [];
-  const ctx = setup(Object.assign({}, LOGIN, prefs), [
+  const ctx = setup(Object.assign({ preload_next: false }, LOGIN, prefs), [
     [/player\/v2/, v2 || F.PLAYER_V2],
     [/history\/report/, (url, req) => {
       const file = req.args[req.args.indexOf("--data-binary") + 1].slice(1);
@@ -934,5 +935,201 @@ test("没有 bili_jct 时不上报；上报失败只记录警告", async () => {
 test("直播不上报进度", async () => {
   const ctx = setup(LOGIN, LIVE_ROUTES);
   await open(ctx, "https://live.bilibili.com/7734200");
+  assert.equal(ctx.iina.timers.active(), 0);
+});
+
+// ---------------------------------------------------------------- 预加载
+
+const NEXT_URL = "https://www.bilibili.com/video/BV1xx411c7mD?p=1";
+const warms = (ctx) => ctx.env.requests.filter((r) => r.args.includes("-r"));
+const count = (ctx, re) => ctx.env.requests.filter((r) => re.test(r.url) && !r.args.includes("-r")).length;
+
+// 播放列表里还有下一项，当前视频时长 120 秒；每次 tick 相当于过了 5 秒
+async function preloadSetup(prefs, next, routes) {
+  const ctx = setup(prefs, routes);
+  Object.assign(ctx.iina.props, { "playlist-pos": 0, "playlist-count": 2, "playlist/1/filename": next || NEXT_URL, duration: 120 });
+  await open(ctx, PLAIN_URL);
+  return ctx;
+}
+
+async function playTo(ctx, t) {
+  ctx.iina.props["time-pos"] = t;
+  await ctx.iina.timers.tick();
+}
+
+async function openNext(ctx, url) {
+  await ctx.player.onEndFile();
+  ctx.iina.props["playlist-pos"] = 1;
+  ctx.iina.props["stream-open-filename"] = url || NEXT_URL;
+  await ctx.player.onLoad();
+}
+
+test("剩余不到 60 秒时预加载下一项，并预热将要播放的那一档音视频", async () => {
+  const ctx = await preloadSetup();
+  assert.equal(count(ctx, /web-interface\/view/), 1);
+  // 起播后的头一次检查不做事；剩余 90 秒时也不做
+  await playTo(ctx, 25);
+  await playTo(ctx, 30);
+  assert.equal(count(ctx, /web-interface\/view/), 1);
+  await playTo(ctx, 61);
+  assert.equal(count(ctx, /web-interface\/view/), 2);
+  assert.equal(count(ctx, /player\/playurl/), 2);
+
+  // 只预热默认选中的清晰度和音轨，各读开头 1MB，不带 Cookie
+  const urls = warms(ctx).map((r) => r.url);
+  const info = ctx.player.current;
+  assert.deepEqual(urls, [info.video[info.videoIndex].url, info.audio[info.audioIndex].url]);
+  for (const r of warms(ctx)) {
+    assert.equal(r.args[r.args.indexOf("-r") + 1], "0-1048575");
+    assert.equal(r.args[r.args.indexOf("-o") + 1], "/dev/null");
+    assert.equal(r.cookie, null);
+  }
+
+  // 同一个下一项只预加载一次
+  await playTo(ctx, 10);
+  await playTo(ctx, 100);
+  assert.equal(count(ctx, /web-interface\/view/), 2);
+});
+
+test("轮到下一项时直接使用预加载的结果，只重新获取弹幕", async () => {
+  const ctx = await preloadSetup();
+  await playTo(ctx, 0);
+  await playTo(ctx, 70);
+  const before = { view: count(ctx, /web-interface\/view/), play: count(ctx, /player\/playurl/), v2: count(ctx, /player\/v2/), dm: count(ctx, /comment\.bilibili/) };
+  await openNext(ctx);
+  assert.equal(count(ctx, /web-interface\/view/), before.view);
+  assert.equal(count(ctx, /player\/playurl/), before.play);
+  assert.equal(count(ctx, /player\/v2/), before.v2);
+  assert.equal(count(ctx, /comment\.bilibili/), before.dm + 1);
+  assert.ok(ctx.iina.props["stream-open-filename"].startsWith("edl://"));
+  assert.equal(ctx.iina.commands.filter((c) => c[0] === "sub-add").length, 4);
+  assert.equal(ctx.player.current.pageUrl, NEXT_URL);
+  // 结果用过就丢，再打开同一链接会重新解析
+  await openNext(ctx);
+  assert.equal(count(ctx, /web-interface\/view/), before.view + 1);
+});
+
+test("预加载还没完成时等它完成，不重复请求", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const ctx = await preloadSetup();
+  // mockEnv 的路由不支持异步返回值，包装 exec 让预加载的取流请求卡住
+  const exec = ctx.env.exec;
+  let delayed = false;
+  ctx.env.exec = async (file, args) => {
+    if (!delayed && /player\/playurl/.test(args[args.length - 1])) {
+      delayed = true;
+      await gate;
+    }
+    return exec(file, args);
+  };
+  ctx.iina.props["time-pos"] = 0;
+  ctx.iina.timers.tick();
+  ctx.iina.props["time-pos"] = 70;
+  const preloading = ctx.iina.timers.tick();
+  const loading = openNext(ctx);
+  await new Promise((r) => setImmediate(r));
+  release();
+  await Promise.all([preloading, loading]);
+  assert.equal(count(ctx, /player\/playurl/), 2);
+  assert.ok(ctx.iina.props["stream-open-filename"].startsWith("edl://"));
+});
+
+test("预加载失败时照常解析", async () => {
+  const routes = [[/player\/playurl/, [F.PLAYURL, { code: -404, message: "啥都木有" }, F.PLAYURL]]].concat(VIDEO_ROUTES);
+  const ctx = await preloadSetup({}, null, routes);
+  await playTo(ctx, 0);
+  await playTo(ctx, 70);
+  assert.equal(warms(ctx).length, 0);
+  await openNext(ctx);
+  assert.equal(count(ctx, /player\/playurl/), 3);
+  assert.ok(ctx.iina.props["stream-open-filename"].startsWith("edl://"));
+});
+
+test("下一项换了、设置变了或放得太久时不用预加载的结果", async () => {
+  const cases = [
+    ["换了下一项", (ctx) => openNext(ctx, PLAIN_URL)],
+    ["改了编码偏好", (ctx) => { ctx.prefs.video_codec = "avc"; return openNext(ctx); }],
+    ["改了清晰度上限", (ctx) => { ctx.prefs.max_quality = "64"; return openNext(ctx); }],
+    ["超过 30 分钟", async (ctx) => {
+      const now = Date.now;
+      Date.now = () => now() + 31 * 60 * 1000;
+      try {
+        await openNext(ctx);
+      } finally {
+        Date.now = now;
+      }
+    }],
+    ["中间打开了别的文件", async (ctx) => {
+      ctx.iina.props["stream-open-filename"] = "/tmp/a.mp4";
+      await ctx.player.onLoad();
+      await openNext(ctx);
+    }],
+    ["关闭了窗口", async (ctx) => {
+      await ctx.player.onWindowClose();
+      await openNext(ctx);
+    }],
+  ];
+  for (const [name, act] of cases) {
+    const ctx = await preloadSetup();
+    await playTo(ctx, 0);
+    await playTo(ctx, 70);
+    const views = count(ctx, /web-interface\/view/);
+    await act(ctx);
+    assert.equal(count(ctx, /web-interface\/view/), views + 1, name);
+  }
+});
+
+test("重新加载当前视频时不用预加载的结果", async () => {
+  const ctx = await preloadSetup({}, PLAIN_URL);
+  await playTo(ctx, 0);
+  await playTo(ctx, 70);
+  const views = count(ctx, /web-interface\/view/);
+  ctx.player.handleAction({ type: "reload" });
+  ctx.iina.props["stream-open-filename"] = PLAIN_URL;
+  await ctx.player.onLoad();
+  assert.equal(count(ctx, /web-interface\/view/), views + 1);
+  assert.equal(ctx.iina.props["file-local-options/start"], "70");
+});
+
+test("关闭预加载、下一项是直播或不是 B 站链接、没有下一项时不预加载", async () => {
+  const cases = [
+    [{ preload_next: false }, null],
+    [{}, "https://live.bilibili.com/7734200"],
+    [{}, "/Users/me/a.mp4"],
+    [{}, ""],
+  ];
+  for (const [prefs, next] of cases) {
+    const ctx = await preloadSetup(prefs, next);
+    if (next === "") ctx.iina.props["playlist-count"] = 1;
+    await playTo(ctx, 0);
+    await playTo(ctx, 70);
+    assert.equal(count(ctx, /web-interface\/view/), 1, JSON.stringify([prefs, next]));
+    assert.equal(count(ctx, /getRoom/), 0);
+    assert.equal(warms(ctx).length, 0);
+  }
+});
+
+test("从快结束的位置起播时，等过一次检查再预加载，不和起播抢带宽", async () => {
+  const ctx = await preloadSetup();
+  await playTo(ctx, 100);
+  assert.equal(count(ctx, /web-interface\/view/), 1);
+  await playTo(ctx, 105);
+  assert.equal(count(ctx, /web-interface\/view/), 2);
+});
+
+test("按播放速度折算剩余时间", async () => {
+  const ctx = await preloadSetup();
+  ctx.iina.props.speed = 2;
+  await playTo(ctx, 0);
+  // 剩余 90 秒按 2 倍速只要 45 秒（1 倍速时不预加载，见上面的用例）
+  await playTo(ctx, 30);
+  assert.equal(count(ctx, /web-interface\/view/), 2);
+});
+
+test("换视频后停止检查", async () => {
+  const ctx = await preloadSetup();
+  assert.equal(ctx.iina.timers.active(), 1);
+  await ctx.player.onEndFile();
   assert.equal(ctx.iina.timers.active(), 0);
 });

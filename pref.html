@@ -114,6 +114,10 @@
     <label><input type="checkbox" data-pref-key="sync_progress" /> 同步播放进度到 B 站（需要登录）</label>
     <p class="help">看过的视频会出现在 B 站历史记录里，可以在其他设备上接着看；打开视频时也会从 B 站记录的进度继续播放（链接里带 t= 时以链接为准）。</p>
   </div>
+  <div class="pref-section">
+    <label><input type="checkbox" data-pref-key="preload_next" /> 预加载播放列表里的下一项</label>
+    <p class="help">当前视频剩下不到一分钟时，提前解析下一项并让 CDN 缓存好将要播放的那一档，切换时少等几秒。每次大约多用 2MB 流量，切到别的视频时会丢弃。</p>
+  </div>
 
   <h3>直播</h3>
   <div class="pref-section">
