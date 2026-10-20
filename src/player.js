@@ -18,6 +18,11 @@ const PRELOAD_CHECK_MS = 5000;
 const PRELOAD_WARMUP_CHECKS = 2;
 // 播放地址约两小时过期，预加载的结果放久了就不用
 const PRELOAD_TTL = 30 * 60 * 1000;
+// 流畅弹幕：mpv 只在视频出新帧时重画字幕，用 fps 滤镜把帧重复到屏幕刷新率，弹幕就按刷新率移动。
+// 屏幕刷新率未知时按 60，最高 120，免得高刷屏上为 4K 视频多做太多合成
+const SMOOTH_LABEL = "bilidm";
+const SMOOTH_DEFAULT_FPS = 60;
+const SMOOTH_MAX_FPS = 120;
 const CODEC_NAMES = { hevc: "HEVC (H.265)", avc: "AVC (H.264)", av1: "AV1" };
 
 // 侧边栏可调的弹幕样式：键名 -> [首选项, 把网页传来的值转成首选项的值，不合法时返回 undefined]
@@ -86,7 +91,7 @@ function createPlayer(api, bili, parser) {
   // 播放器信息：CC/AI 字幕列表与登录账号上次的播放进度
   async function fetchPlayerInfo(info, wantProgress) {
     if ((!bili.config().subtitle.enable && !wantProgress) || !info.bvid || !info.cid) return null;
-    return bili.api(`https://api.bilibili.com/x/player/v2?bvid=${info.bvid}&cid=${info.cid}`);
+    return bili.api(`https://api.bilibili.com/x/player/v2?${info.aid ? "aid=" + info.aid + "&" : ""}bvid=${info.bvid}&cid=${info.cid}`);
   }
 
   // CC 字幕与 AI 字幕；未登录时接口通常不返回 AI 字幕
@@ -112,10 +117,17 @@ function createPlayer(api, bili, parser) {
     mpv.set("file-local-options/" + name, value);
   }
 
-  // 上次看到的位置（秒），只认同一个分 P / 同一集；快看完的不再续播
+  // 上次看到的位置（秒），只认同一个分 P / 同一集；快看完的不再续播。
+  // 记录有两处：解析时 playurl / 剧集信息带回的（info.lastPlay）和 player/v2 的，取有进度的那条。
+  // 返回 null 表示没拿到记录（未登录、请求失败），0 表示 B 站记录里不用续播
   function resumePosition(data, info) {
-    const t = Math.floor(Number(data && data.last_play_time) / 1000);
-    if (!(t > 0) || String(data.last_play_cid) !== String(info.cid)) return 0;
+    const records = [info.lastPlay, data && data.last_play_time !== undefined
+      ? { cid: data.last_play_cid, time: Number(data.last_play_time) } : null].filter(Boolean);
+    for (const r of records) bili.log(`B 站播放记录：cid=${r.cid} ${Math.floor(r.time / 1000)}s（本集 cid=${info.cid}）`);
+    const record = records.find((r) => r.time > 0) || records[0];
+    if (!record) return null;
+    const t = Math.floor(Number(record.time) / 1000);
+    if (!(t > 0) || String(record.cid) !== String(info.cid)) return 0;
     return info.duration && t > info.duration - FINISHED_MARGIN ? 0 : t;
   }
 
@@ -150,13 +162,18 @@ function createPlayer(api, bili, parser) {
     setLocal("http-header-fields", ["Referer: " + REFERER]);
     setLocal("user-agent", UA);
     setLocal("force-media-title", info.title || "");
+    // IINA 1.5.0 的普通跳转在 B 站的流上偶尔只有声音、画面停住（iina/iina#6316），精确跳转不会
+    setLocal("hr-seek", "yes");
     // 链接里的 t= 和重新加载时沿用的进度优先于上次的播放记录
     let from = carry.start !== undefined ? carry.start : info.start;
     if (from === undefined || from === null) {
-      from = info.sync ? resume : 0;
+      from = info.sync ? resume : null;
       if (from) info.resumed = from;
+      // 拿到了 B 站的记录却不用续播时显式写 none，免得 IINA 自己记下的旧位置（watch_later）生效
+      else if (from === 0) from = "none";
     }
     if (from) setLocal("start", String(from));
+    applySmooth(smoothTarget(info, !!xml && bili.config().danmaku.show));
 
     if (xml) {
       // 弹幕也可能作为第二字幕与 CC 字幕同时显示，此时要保留 ASS 里的位置和动画
@@ -178,6 +195,7 @@ function createPlayer(api, bili, parser) {
   async function onLoad() {
     const url = mpv.getString("stream-open-filename");
     if (!isBilibiliUrl(url)) {
+      applySmooth(0);
       preload = null;
       current = null;
       next = null;
@@ -217,6 +235,7 @@ function createPlayer(api, bili, parser) {
       osd("B 站链接解析失败" + (bili.state.lastError ? "：" + bili.state.lastError : ""));
       return;
     }
+    if (result.type !== "video") applySmooth(0);
     if (result.type === "list") {
       if (!result.items.length) {
         osd("没有可播放的内容");
@@ -284,6 +303,41 @@ function createPlayer(api, bili, parser) {
       if (subId("secondary-sid") === dm.id) mpv.set("secondary-sid", "no");
     }
     return true;
+  }
+
+  // ---------------------------------------------------------------- 流畅弹幕
+
+  // 滤镜加在全局的 vf 上并带标签，换到下一个 B 站视频时目标不变就原样保留，不用重建滤镜链；
+  // 打开其他文件或直播时在 on_load 里去掉，那时还没有建立滤镜链，没有额外开销。
+  // IINA 退出时会把 vf 记进 watch_later，下次打开同一链接时也在 on_load 里纠正
+  function smoothApplied() {
+    const vf = mpv.getNative("vf");
+    const f = Array.isArray(vf) ? vf.find((x) => x && x.label === SMOOTH_LABEL) : null;
+    return f ? Number(f.params && f.params.fps) || -1 : 0;
+  }
+
+  function applySmooth(fps) {
+    if (smoothApplied() === fps) return;
+    if (fps) mpv.command("vf", ["add", `@${SMOOTH_LABEL}:fps=fps=${fps}`]);
+    else mpv.command("vf", ["remove", "@" + SMOOTH_LABEL]);
+    bili.log(fps ? `流畅弹幕：视频帧重复到 ${fps} fps` : "流畅弹幕：已停用");
+  }
+
+  // 显示弹幕且视频帧率低于屏幕刷新率时返回要补到的帧率，否则返回 0
+  function smoothTarget(info, show) {
+    if (!info || info.type !== "video" || !show || !bili.config().danmaku.smooth) return 0;
+    const v = info.video[info === current && loaded ? selectedIndex("video") : info.videoIndex];
+    // on_load 时 container-fps 还是上一个文件的
+    const fps = (v && v.fps) || (loaded ? mpv.getNumber("container-fps") : 0);
+    const display = Math.round(mpv.getNumber("display-fps"));
+    const target = Math.min(SMOOTH_MAX_FPS, display > 0 ? display : SMOOTH_DEFAULT_FPS);
+    // 59.94 之类和刷新率只差一点的不用补
+    return fps > 0 && fps < target - 1 ? target : 0;
+  }
+
+  function updateSmooth() {
+    if (!loaded || !current || current.type !== "video") return;
+    applySmooth(smoothTarget(current, isDanmakuVisible()));
   }
 
   // 按当前样式重新生成弹幕并替换原来的轨道；正在显示时新轨道接替原来的位置（主字幕或第二字幕），不用重新加载视频
@@ -690,9 +744,11 @@ function createPlayer(api, bili, parser) {
       buildMenu();
       return;
     }
-    if (current.hasDanmaku && bili.config().danmaku.show) setDanmaku(true);
+    // 两个方向都显式设置：IINA 的 watch_later 会恢复上次的 sid，关掉弹幕时也可能把弹幕打开
+    if (current.hasDanmaku) setDanmaku(!!bili.config().danmaku.show);
     danmakuVisible = isDanmakuVisible();
     loaded = true;
+    updateSmooth();
     if (current.resumed) osd("从上次看到的 " + clock(current.resumed) + " 继续播放");
     startProgress(current);
     appendFollowing();
@@ -714,9 +770,15 @@ function createPlayer(api, bili, parser) {
         savePref("danmaku_show", visible);
       }
     }
+    // 换了清晰度帧率可能不同（如 1080P60）
+    if (kind === "sub" || kind === "video") updateSmooth();
     buildMenu();
   }
 
+  // 窗口移到刷新率不同的屏幕上
+  function onDisplayFps() {
+    updateSmooth();
+  }
 
   function onEndFile() {
     loaded = false;
@@ -727,7 +789,7 @@ function createPlayer(api, bili, parser) {
   }
 
   return {
-    onLoad, onWindowLoaded, onFileLoaded, onTrackChanged, onEndFile, onPause, onWindowClose, buildMenu, updateLoginLabel,
+    onLoad, onWindowLoaded, onFileLoaded, onTrackChanged, onDisplayFps, onEndFile, onPause, onWindowClose, buildMenu, updateLoginLabel,
     snapshot, handleAction,
     toggleDanmaku, setDanmakuStyle, selectVideo, selectAudio, selectLiveQuality, selectCodec,
     get current() { return current; },

@@ -167,6 +167,10 @@
     滚动弹幕停留（秒）：<input type="number" data-pref-key="danmaku_scroll_time" data-type="float" min="1" step="1" />
     顶部/底部弹幕停留（秒）：<input type="number" data-pref-key="danmaku_fixed_time" data-type="float" min="1" step="1" />
   </div>
+  <div class="pref-section">
+    <label><input type="checkbox" data-pref-key="danmaku_smooth" /> 流畅弹幕</label>
+    <p class="help">弹幕只在视频出新的一帧时移动，30 帧的视频上滚动弹幕一秒只动 30 次。开启后，显示弹幕时把视频帧重复到屏幕刷新率（如 60Hz），弹幕随之按屏幕刷新率移动，画面本身不变。会多占一些 GPU，关掉弹幕时自动停用。</p>
+  </div>
 
   <h3>其他</h3>
   <div class="pref-section">

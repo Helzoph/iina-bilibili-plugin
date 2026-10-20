@@ -60,7 +60,16 @@ function fakeIina(prefs) {
       getFlag: (k) => !!props[k],
       getNative: (k) => props[k],
       set: (k, v) => { props[k] = v; },
-      command: (name, args) => commands.push([name].concat(args)),
+      command: (name, args) => {
+        commands.push([name].concat(args));
+        // 只模拟带标签的 vf add/remove（@label:name=k=v），同标签的 add 替换原来的滤镜
+        if (name === "vf") {
+          const m = /^@(\w+)(?::(\w+)=(\w+)=(\S+))?$/.exec(args[1]);
+          const list = (props.vf || []).filter((f) => f.label !== m[1]);
+          if (args[0] === "add") list.push({ label: m[1], name: m[2], enabled: true, params: { [m[3]]: m[4] } });
+          props.vf = list;
+        }
+      },
     },
     core: { osd: (m) => osds.push(m) },
     menu: {

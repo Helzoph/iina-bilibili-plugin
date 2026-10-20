@@ -53,6 +53,7 @@ event.on("mpv.vid.changed", () => player.onTrackChanged("video"));
 event.on("mpv.aid.changed", () => player.onTrackChanged("audio"));
 event.on("mpv.sid.changed", () => player.onTrackChanged("sub"));
 event.on("mpv.secondary-sid.changed", () => player.onTrackChanged("sub"));
+event.on("mpv.display-fps.changed", () => player.onDisplayFps());
 
 player.buildMenu();
 player.updateLoginLabel(false).then(() => player.buildMenu(), (e) => console.error("[bilibili] " + e));

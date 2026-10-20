@@ -58,7 +58,7 @@ test("打包产物监听文件加载与轨道变化事件，并建立菜单", ()
   const { events, iina } = run();
   assert.deepEqual(Object.keys(events).sort(), [
     "iina.file-loaded", "iina.window-loaded", "iina.window-will-close",
-    "mpv.aid.changed", "mpv.end-file", "mpv.pause.changed", "mpv.secondary-sid.changed", "mpv.sid.changed", "mpv.vid.changed",
+    "mpv.aid.changed", "mpv.display-fps.changed", "mpv.end-file", "mpv.pause.changed", "mpv.secondary-sid.changed", "mpv.sid.changed", "mpv.vid.changed",
   ]);
   assert.equal(iina.menuItems.length, 1);
   assert.equal(iina.menuItems[0].title, "Bilibili");

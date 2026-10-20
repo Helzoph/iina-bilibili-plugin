@@ -115,7 +115,7 @@ function createParser(bili) {
 
   // 统一使用不带 /wbi/ 的接口路径：携带 buvid 却未做 WBI 签名时请求 /wbi/ 接口会被随机风控。
   // try_look=1 让未登录用户也能拿到 720P/1080P，但已登录时带上它反而会被限制在 1080P，所以只在未登录时使用
-  // info: { bvid, aid, cid, epId, title, author, web, width, height, start, duration }
+  // info: { bvid, aid, cid, epId, title, author, web, width, height, start, duration, lastPlay }
   async function resolveStream(info) {
     const cfg = bili.config().video;
     const params = `cid=${info.cid}&qn=127&fnval=4048&fourk=1` + ((await bili.uid()) ? "" : "&try_look=1");
@@ -146,6 +146,9 @@ function createParser(bili) {
       bili.fail("未找到可播放的视频流，返回字段: " + Object.keys(play).sort().join(","), "未找到可播放的视频流");
       return null;
     }
+    // 登录账号上次的播放记录（毫秒）：普通视频的 playurl 带 last_play_time/last_play_cid，番剧从剧集信息里取
+    if (info.lastPlay) result.lastPlay = info.lastPlay;
+    else if (play.last_play_time !== undefined) result.lastPlay = { cid: play.last_play_cid, time: Number(play.last_play_time) };
     if (play.is_preview === 1 || (info.epId && play.durl && !play.dash)) {
       result.title = "【试看】" + (result.title || "");
       result.preview = true;
@@ -242,7 +245,12 @@ function createParser(bili) {
     }
     const ep = episodes[i];
     const dim = ep.dimension || {};
+    // 番剧的取流接口不带播放记录，登录后剧集信息里有整季上次看到的那一集和秒数
+    const prog = data.user_status && data.user_status.progress;
+    const lastPlay = prog && prog.last_ep_id !== undefined
+      ? { cid: String(prog.last_ep_id) === epId ? ep.cid : null, time: Number(prog.last_time) * 1000 } : undefined;
     const result = await resolveStream({
+      lastPlay,
       epId, bvid: ep.bvid, aid: ep.aid, cid: String(ep.cid), title: episodeTitle(data.title, ep),
       author: data.up_info && data.up_info.uname,
       web: "https://www.bilibili.com/bangumi/play/ep" + epId,

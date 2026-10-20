@@ -175,6 +175,12 @@ test("onLoad 播放试看片段时直接打开 mp4 并提示", async () => {
   assert.match(ctx.iina.osds.at(-1), /试看/);
 });
 
+test("onLoad 让 B 站视频使用精确跳转", async () => {
+  const ctx = setup();
+  await open(ctx, VIDEO_URL);
+  assert.equal(ctx.iina.props["file-local-options/hr-seek"], "yes");
+});
+
 test("onLoad 打开直播流并使用直播 Referer", async () => {
   const ctx = setup({}, LIVE_ROUTES);
   ctx.iina.props["stream-open-filename"] = "https://live.bilibili.com/7734200";
@@ -794,6 +800,79 @@ test("从列表展开的条目、不是最后一项、已是最后一 P 或关�
   }
 });
 
+// ---------------------------------------------------------------- 流畅弹幕
+
+const smoothFps = (iina) => {
+  const f = (iina.props.vf || []).find((x) => x.label === "bilidm");
+  return f ? Number(f.params.fps) : 0;
+};
+
+test("显示弹幕时把 30 帧的视频补到屏幕刷新率，未知时按 60", async () => {
+  let ctx = setup({ danmaku_show: true });
+  ctx.iina.props["display-fps"] = 74.97;
+  await open(ctx, VIDEO_URL);
+  assert.equal(smoothFps(ctx.iina), 75);
+  // 在 on_load 里加好，文件打开后不用再重建滤镜链
+  assert.equal(ctx.iina.commands.filter((c) => c[0] === "vf").length, 1);
+
+  ctx = setup({ danmaku_show: true });
+  await open(ctx, VIDEO_URL);
+  assert.equal(smoothFps(ctx.iina), 60);
+});
+
+test("关掉弹幕、关闭设置、高帧率视频或直播时不补帧", async () => {
+  for (const prefs of [{ danmaku_show: false }, { danmaku_smooth: false }, { danmaku_enable: false }]) {
+    const ctx = setup(Object.assign({ danmaku_show: true }, prefs));
+    await open(ctx, VIDEO_URL);
+    assert.equal(smoothFps(ctx.iina), 0, JSON.stringify(prefs));
+  }
+
+  // 屏幕刷新率不比视频高
+  let ctx = setup({ danmaku_show: true });
+  ctx.iina.props["display-fps"] = 30;
+  await open(ctx, VIDEO_URL);
+  assert.equal(smoothFps(ctx.iina), 0);
+
+  // 上一个视频留下的滤镜在打开直播和其他文件时去掉
+  for (const [url, routes] of [["https://live.bilibili.com/7734200", LIVE_ROUTES], ["/Users/me/movie.mkv", VIDEO_ROUTES]]) {
+    ctx = setup({ danmaku_show: true }, routes);
+    ctx.iina.props.vf = [{ label: "bilidm", name: "fps", params: { fps: "60" } }];
+    ctx.iina.props["stream-open-filename"] = url;
+    await ctx.player.onLoad();
+    assert.equal(smoothFps(ctx.iina), 0, url);
+  }
+});
+
+test("开关弹幕、换屏幕时随之启用或停用补帧", async () => {
+  const ctx = setup({ danmaku_show: true });
+  await open(ctx, VIDEO_URL);
+  ctx.player.toggleDanmaku();
+  ctx.player.onTrackChanged("sub");
+  assert.equal(smoothFps(ctx.iina), 0);
+  ctx.player.toggleDanmaku();
+  ctx.player.onTrackChanged("sub");
+  assert.equal(smoothFps(ctx.iina), 60);
+  ctx.iina.props["display-fps"] = 120;
+  ctx.player.onDisplayFps();
+  assert.equal(smoothFps(ctx.iina), 120);
+  // 目标不变时不重复设置
+  const n = ctx.iina.commands.length;
+  ctx.player.onDisplayFps();
+  assert.equal(ctx.iina.commands.length, n);
+});
+
+test("关闭弹幕时，IINA 恢复的上次字幕选择不会把弹幕打开", async () => {
+  const ctx = setup({ danmaku_show: false });
+  ctx.iina.props["stream-open-filename"] = VIDEO_URL;
+  await ctx.player.onLoad();
+  loadTracks(ctx.iina);
+  const dm = ctx.iina.props["track-list"].find((t) => t.title === DANMAKU_TITLE);
+  ctx.iina.props.sid = String(dm.id);
+  ctx.player.onFileLoaded();
+  assert.equal(ctx.iina.props.sid, "no");
+  assert.equal(ctx.prefs.danmaku_show, false);
+});
+
 // ---------------------------------------------------------------- 播放进度
 
 const LOGIN = { cookie_source: "manual", cookie: "SESSDATA=s; DedeUserID=42; bili_jct=tok; buvid3=b" };
@@ -802,16 +881,17 @@ const lastPlay = (ms, cid) => ({ code: 0, data: { ...F.PLAYER_V2.data, last_play
 
 // 已登录的播放器；reported 记录每次上报的表单
 // 关掉预加载，计时器只剩进度上报这一个
-function syncSetup(prefs, v2, reply) {
+// extra 是排在默认路由前面的路由
+function syncSetup(prefs, v2, reply, extra) {
   const reported = [];
-  const ctx = setup(Object.assign({ preload_next: false }, LOGIN, prefs), [
+  const ctx = setup(Object.assign({ preload_next: false }, LOGIN, prefs), (extra || []).concat([
     [/player\/v2/, v2 || F.PLAYER_V2],
     [/history\/report/, (url, req) => {
       const file = req.args[req.args.indexOf("--data-binary") + 1].slice(1);
       reported.push(Object.fromEntries(new URLSearchParams(fs.readFileSync(file, "utf8"))));
       return reply || { code: 0 };
     }],
-  ].concat(VIDEO_ROUTES));
+  ], VIDEO_ROUTES));
   ctx.reported = reported;
   return ctx;
 }
@@ -839,11 +919,45 @@ test("链接里的 t=、重新加载时的进度优先于播放记录；不同�
   await ctx.player.onLoad();
   assert.equal(ctx.iina.props["file-local-options/start"], undefined);
 
+  // 拿到了记录但不用续播时显式从头播放，IINA 自己记下的位置不生效
   for (const v2 of [lastPlay(61000, 999), lastPlay(100000), lastPlay(0)]) {
     ctx = syncSetup({}, v2);
     await open(ctx, PLAIN_URL);
-    assert.equal(ctx.iina.props["file-local-options/start"], undefined, JSON.stringify(v2.data));
+    assert.equal(ctx.iina.props["file-local-options/start"], "none", JSON.stringify(v2.data));
   }
+
+  // 没拿到记录时交给 IINA
+  ctx = syncSetup({}, { code: -400, message: "boom" });
+  await open(ctx, PLAIN_URL);
+  assert.equal(ctx.iina.props["file-local-options/start"], undefined);
+});
+
+test("playurl 带回的播放记录优先，player/v2 没有进度时也能续播", async () => {
+  const playurl = (ms, cid) => ({ code: 0, data: { ...F.PLAYURL.data, last_play_time: ms, last_play_cid: cid } });
+  let ctx = syncSetup({}, lastPlay(0), null, [[/player\/playurl/, playurl(45000, 1001)]]);
+  await open(ctx, PLAIN_URL);
+  assert.equal(ctx.iina.props["file-local-options/start"], "45");
+  assert.ok(ctx.env.requests.some((r) => /player\/v2\?aid=\d+&bvid=/.test(r.url)));
+
+  // playurl 没有进度时用 player/v2 的
+  ctx = syncSetup({}, lastPlay(61000), null, [[/player\/playurl/, playurl(-1000, 1001)]]);
+  await open(ctx, PLAIN_URL);
+  assert.equal(ctx.iina.props["file-local-options/start"], "61");
+});
+
+test("番剧从剧集信息里的 user_status 续播，只认同一集", async () => {
+  const season = (epId, sec) => ({ code: 0, result: { ...F.SEASON.result, user_status: { progress: { last_ep_id: epId, last_ep_index: "1", last_time: sec } } } });
+  const routes = (s) => [
+    [/pgc\/view\/web\/season/, s],
+    [/pgc\/player\/web\/playurl/, { code: 0, result: F.PLAYURL.data }],
+  ];
+  let ctx = syncSetup({}, lastPlay(0, 7001), null, routes(season(5001, 300)));
+  await open(ctx, "https://www.bilibili.com/bangumi/play/ep5001");
+  assert.equal(ctx.iina.props["file-local-options/start"], "300");
+
+  ctx = syncSetup({}, lastPlay(0, 7001), null, routes(season(5002, 300)));
+  await open(ctx, "https://www.bilibili.com/bangumi/play/ep5001");
+  assert.equal(ctx.iina.props["file-local-options/start"], "none");
 });
 
 test("未登录或关闭同步时不续播也不上报", async () => {
